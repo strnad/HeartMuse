@@ -1,6 +1,8 @@
 import os
 
 os.environ["HF_HUB_CACHE"] = os.path.join(os.path.dirname(__file__), "ckpt")
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "3600"
+os.environ["HF_HUB_ETAG_TIMEOUT"] = "300"
 
 from huggingface_hub import snapshot_download, hf_hub_download
 from config import CKPT_DIR, REQUIRED_MODELS, HEARTMULGEN_REPO, HEARTMULGEN_FILES

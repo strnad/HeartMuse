@@ -118,9 +118,17 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         yield None, _status_html("Please enter tags.", "error"), *_btns_enabled()
         return
 
-    yield None, _status_html("Generating music (this may take a while)...", "progress"), *_btns_disabled()
+    yield None, _status_html("Checking models...", "progress"), *_btns_disabled()
 
     try:
+        from generator import ensure_models_downloaded
+        from model_manager import is_ready_for_generation
+        if not is_ready_for_generation():
+            yield None, _status_html("Downloading required models (this may take a while)...", "progress"), *_btns_disabled()
+            ensure_models_downloaded()
+
+        yield None, _status_html("Generating music (this may take a while)...", "progress"), *_btns_disabled()
+
         title = song_title.strip() or "Untitled"
         output_path = generate_output_path(title)
         path = generate_music(

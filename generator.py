@@ -53,11 +53,11 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
     ensure_models_downloaded()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    lyrics_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, dir=OUTPUT_DIR)
+    lyrics_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, dir=OUTPUT_DIR, encoding="utf-8")
     lyrics_file.write(lyrics)
     lyrics_file.close()
 
-    tags_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, dir=OUTPUT_DIR)
+    tags_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, dir=OUTPUT_DIR, encoding="utf-8")
     tags_file.write(tags)
     tags_file.close()
 
