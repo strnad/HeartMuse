@@ -42,8 +42,8 @@ While [HeartMuLa](https://github.com/HeartMuLa/heartlib) provides state-of-the-a
 
 ### Prerequisites
 - **Git** - For cloning repositories and submodules
-- **Python 3.10+**
-- **CUDA-compatible GPU** (recommended **12GB VRAM** (8GB VRAM minimum) for HeartMuLa-3B model)
+- **Python 3.10 - 3.12** (3.10 recommended by HeartMuLa authors; newer versions may not work)
+- **NVIDIA GPU with CUDA 12.4+** (recommended **12GB VRAM**, 8GB VRAM minimum, for HeartMuLa-3B model)
 - **Ollama** (optional, for local lyrics generation) - [Download Ollama](https://ollama.ai)
 
 ### Installation
@@ -84,26 +84,7 @@ Open your browser to **http://localhost:7860** and start creating!
 
 ## ⚙️ Configuration
 
-Copy `.env.example` to `.env` and customize:
-
-```bash
-# Choose your LLM backend
-LLM_BACKEND=Ollama          # or OpenAI
-
-# Ollama Configuration (Local)
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=glm-4.7-flash
-
-# OpenAI Configuration (API)
-OPENAI_API_KEY=sk-your-key-here
-OPENAI_MODEL=gpt-4o-mini
-
-# Music Generation Parameters
-MUSIC_TEMPERATURE=1.0       # Creativity (0.5-2.0)
-MUSIC_CFG_SCALE=1.5        # Adherence to prompt (1.0-3.0)
-MUSIC_TOPK=50              # Sampling diversity (1-100)
-MUSIC_MAX_LENGTH_SEC=240   # Max duration in seconds
-```
+Copy `.env.example` to `.env` and customize. See the file for available options and their descriptions.
 
 ### Using Ollama (100% Local)
 
@@ -172,23 +153,17 @@ HeartMuse is built on top of the incredible work by the **HeartMuLa** team:
 - **[Ollama](https://ollama.ai)** - Local LLM inference
 - **[OpenAI API](https://openai.com)** - Cloud LLM option
 - **PyTorch** - Deep learning backend
-- **Python 3.10+** - Core runtime
+- **Python 3.10 - 3.12** - Core runtime
 
 ## 📋 System Requirements
 
-**Minimum (CPU mode)**:
+**Required**:
 - Git
-- Python 3.10+
-- 16GB RAM
-- 10GB disk space
-- ⚠️ **Note**: CPU mode is functional but significantly slower than GPU
-
-**Recommended (GPU mode)**:
-- Git
-- CUDA-compatible GPU with **8GB+ VRAM** (e.g., RTX 3070, RTX 4060, or better)
+- Python 3.10 - 3.12 (3.10 recommended)
+- NVIDIA GPU with **8GB+ VRAM** (e.g., RTX 3070, RTX 4060, or better)
+- CUDA 12.4+
 - 16GB system RAM
 - 20GB disk space (for models and generated audio)
-- CUDA 11.8+ / 12.x
 
 **Memory Optimization**:
 - Lazy loading is enabled by default (reduces VRAM footprint)
@@ -205,6 +180,10 @@ The first run automatically downloads ~3GB of model weights from Hugging Face. E
 ### Out of Memory Errors
 - Use the "Unload Model" button between generations
 - Reduce `MUSIC_MAX_LENGTH_SEC` in GUI or `.env`
+
+### Installation Problems
+- Make sure you are using **Python 3.10 - 3.12** (other versions are not supported)
+- Update your NVIDIA drivers to the latest version
 
 ### Ollama Connection Issues
 - Ensure Ollama is running: `ollama serve`
