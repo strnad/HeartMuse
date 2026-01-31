@@ -1,16 +1,18 @@
 import os
+import re
 import html as html_mod
 import gradio as gr
 from config import (
     DEFAULT_GENERATION_PARAMS, DEFAULT_OLLAMA_URL, DEFAULT_OLLAMA_MODEL,
     DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_URL, DEFAULT_OPENAI_KEY,
     DEFAULT_OPENAI_MODELS, DEFAULT_LLM_BACKEND, DEFAULT_LLM_TEMPERATURE,
-    OUTPUT_DIR,
+    DEFAULT_LLM_TIMEOUT, OUTPUT_DIR,
 )
 from model_manager import is_ready_for_generation
-from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
+from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models, _call_llm
 from generator import generate_music, unload_pipeline
 from history import generate_output_path, save_generation, load_history
+from prompt_templates import PromptBuilder
 
 
 def on_list_ollama(ollama_url):
@@ -20,11 +22,11 @@ def on_list_ollama(ollama_url):
     return gr.update(choices=models, value=models[0])
 
 
-def _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, temperature):
+def _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, temperature, timeout):
     if backend == "Ollama":
-        return {"base_url": ollama_url, "model": ollama_model, "temperature": temperature}
+        return {"base_url": ollama_url, "model": ollama_model, "temperature": temperature, "timeout": timeout}
     else:
-        return {"api_key": openai_key, "base_url": openai_url, "model": openai_model, "temperature": temperature}
+        return {"api_key": openai_key, "base_url": openai_url, "model": openai_model, "temperature": temperature, "timeout": timeout}
 
 
 def _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload):
@@ -72,25 +74,48 @@ def _status_html(message, style="info"):
 
 
 def on_generate_text(description, title, lyrics, tags,
-                     gen_title, gen_lyrics, gen_tags,
+                     gen_desc, gen_title, gen_lyrics, gen_tags,
                      backend, ollama_url, ollama_model,
                      openai_url, openai_model, openai_key,
-                     llm_temp, auto_unload, max_length_sec):
-    """Generate checked text fields using LLM."""
-    if not gen_title and not gen_lyrics and not gen_tags:
-        yield title, lyrics, tags, _status_html("Nothing selected for generation.", "error"), *_btns_enabled()
+                     llm_temp, llm_timeout, auto_unload, max_length_sec):
+    """Generate checked text fields using LLM. Can generate from scratch if nothing is provided."""
+    if not gen_desc and not gen_title and not gen_lyrics and not gen_tags:
+        yield description, title, lyrics, tags, _status_html("Nothing selected for generation.", "error"), *_btns_enabled()
         return
 
-    if not description.strip() and not title.strip() and not lyrics.strip() and not tags.strip():
-        yield title, lyrics, tags, _status_html("Please provide at least a song description or some field content.", "error"), *_btns_enabled()
-        return
-
-    yield title, lyrics, tags, _status_html("Generating text...", "progress"), *_btns_disabled()
+    yield description, title, lyrics, tags, _status_html("Generating text...", "progress"), *_btns_disabled()
 
     try:
-        kwargs = _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, llm_temp)
+        kwargs = _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, llm_temp, llm_timeout)
+
+        # Generate or enhance description if requested
+        final_description = description
+        if gen_desc:
+            # Build context dict for PromptBuilder
+            context = {
+                "description": description,
+                "title": title,
+                "lyrics": lyrics,
+                "tags": tags,
+            }
+
+            # Use PromptBuilder to create prompts
+            system_prompt = PromptBuilder.build_system_prompt(["description"])
+            user_prompt = PromptBuilder.build_user_prompt(["description"], context, max_length_sec)
+
+            # Generate description using LLM
+            response = _call_llm(user_prompt, system_prompt, backend.lower(), **kwargs)
+
+            # Parse description from response
+            m = re.search(r'===DESCRIPTION===\s*(.*?)\s*===END_DESCRIPTION===', response, re.DOTALL)
+            if m:
+                final_description = m.group(1).strip()
+            else:
+                # Fallback: use entire response if markers not found
+                final_description = response.strip()
+
         result = generate_checked_fields(
-            description=description,
+            description=final_description,
             title=title,
             lyrics=lyrics,
             tags=tags,
@@ -102,10 +127,10 @@ def on_generate_text(description, title, lyrics, tags,
             **kwargs,
         )
         _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload)
-        generated = [f for f, checked in [("title", gen_title), ("lyrics", gen_lyrics), ("tags", gen_tags)] if checked]
-        yield result["title"], result["lyrics"], result["tags"], _status_html(f"Generated: {', '.join(generated)}", "success"), *_btns_enabled()
+        generated = [f for f, checked in [("description", gen_desc), ("title", gen_title), ("lyrics", gen_lyrics), ("tags", gen_tags)] if checked]
+        yield final_description, result["title"], result["lyrics"], result["tags"], _status_html(f"Generated: {', '.join(generated)}", "success"), *_btns_enabled()
     except Exception as e:
-        yield title, lyrics, tags, _status_html(f"Error: {e}", "error"), *_btns_enabled()
+        yield description, title, lyrics, tags, _status_html(f"Error: {e}", "error"), *_btns_enabled()
 
 
 def on_generate_music_only(song_title, description, lyrics, tags,
@@ -163,6 +188,11 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 def on_unload():
     unload_pipeline()
     return _status_html("Pipeline unloaded, GPU memory freed.", "success")
+
+
+def on_clear_all():
+    """Clear all text fields."""
+    return "", "", "", "", _status_html("All fields cleared.", "info")
 
 
 def render_history():
@@ -243,18 +273,21 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         # 1. Song Description (highlighted)
         gr.Markdown("### Describe your song")
         with gr.Group(elem_id="song-desc-group"):
-            song_desc = gr.Textbox(
-                label="Song Description",
-                placeholder="A romantic ballad about summer love with piano and strings...",
-                lines=3,
-            )
+            with gr.Row():
+                song_desc = gr.Textbox(
+                    label="Song Description",
+                    placeholder="A romantic ballad about summer love with piano and strings... (or leave empty to generate randomly)",
+                    lines=3,
+                    scale=4,
+                )
+                gen_desc_cb = gr.Checkbox(value=False, label="Generate/Enhance", scale=1)
 
         # 2. Song Details with checkboxes
         gr.Markdown("### Song details")
 
         with gr.Row():
             song_title_box = gr.Textbox(label="Song Title", placeholder="Enter or leave empty to generate...", scale=4)
-            gen_title_cb = gr.Checkbox(value=True, label="Generate", scale=1)
+            gen_title_cb = gr.Checkbox(value=True, label="Generate/Enhance", scale=1)
 
         with gr.Row():
             lyrics_box = gr.Textbox(
@@ -263,7 +296,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 lines=10,
                 scale=4,
             )
-            gen_lyrics_cb = gr.Checkbox(value=True, label="Generate", scale=1)
+            gen_lyrics_cb = gr.Checkbox(value=True, label="Generate/Enhance", scale=1)
 
         with gr.Row():
             tags_box = gr.Textbox(
@@ -271,7 +304,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 placeholder="pop,piano,happy,female vocal",
                 scale=4,
             )
-            gen_tags_cb = gr.Checkbox(value=True, label="Generate", scale=1)
+            gen_tags_cb = gr.Checkbox(value=True, label="Generate/Enhance", scale=1)
 
         # LLM Settings (moved above Generate Text button)
         with gr.Accordion("LLM Settings", open=False):
@@ -301,9 +334,11 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
             llm_backend.change(toggle_backend, [llm_backend], [ollama_group, openai_group])
             llm_temp = gr.Slider(0.0, 2.0, value=DEFAULT_LLM_TEMPERATURE, step=0.1, label="LLM Temperature")
+            llm_timeout = gr.Slider(10, 600, value=DEFAULT_LLM_TIMEOUT, step=10, label="LLM Timeout (seconds)")
 
-        # Generate text button
-        gen_text_btn = gr.Button("Generate Text", variant="secondary", size="lg")
+        # Clear and Generate text buttons
+        clear_btn = gr.Button("Clear All", size="sm", variant="secondary")
+        gen_text_btn = gr.Button("Generate Text", variant="primary", size="lg")
 
         # 3. Music generation
         gr.Markdown("### Generate music")
@@ -340,7 +375,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         llm_inputs = [
             llm_backend, ollama_url, ollama_model,
             openai_url, openai_model, openai_key,
-            llm_temp, ollama_auto_unload,
+            llm_temp, llm_timeout, ollama_auto_unload,
         ]
         music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load]
 
@@ -350,8 +385,8 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         gen_text_event = gen_text_btn.click(
             on_generate_text,
             [song_desc, song_title_box, lyrics_box, tags_box,
-             gen_title_cb, gen_lyrics_cb, gen_tags_cb] + llm_inputs + [max_length],
-            [song_title_box, lyrics_box, tags_box, status_box] + all_btns,
+             gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb] + llm_inputs + [max_length],
+            [song_desc, song_title_box, lyrics_box, tags_box, status_box] + all_btns,
         )
 
         # Generate Music button
@@ -363,6 +398,9 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
         unload_ollama_btn.click(on_unload_ollama, [llm_backend, ollama_url, ollama_model], [ollama_status])
         unload_btn.click(on_unload, [], [status_box])
+
+        # Clear button
+        clear_btn.click(on_clear_all, [], [song_desc, song_title_box, lyrics_box, tags_box, status_box])
 
     with gr.Tab("History") as history_tab:
         history_html = gr.HTML(value=render_history())

@@ -46,3 +46,4 @@ DEFAULT_OPENAI_MODELS = [
 
 DEFAULT_LLM_BACKEND = os.environ.get("LLM_BACKEND", "Ollama")
 DEFAULT_LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+DEFAULT_LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))
