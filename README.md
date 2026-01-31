@@ -211,6 +211,16 @@ The first run automatically downloads ~3GB of model weights from Hugging Face. E
 - Check `OLLAMA_URL` matches your Ollama installation
 - Verify the model is downloaded: `ollama list`
 
+## 💖 Support the Project
+
+If HeartMuse saves you time or helps you create something cool, consider supporting development 🙏
+
+### Sponsor via GitHub
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ff69b4?style=for-the-badge&logo=github)](https://github.com/sponsors/strnad)
+
+### Donate with Bitcoin
+`bc1qgsn45g02wran4lph5gsyqtk0k7t98zsg6qur0y`
+
 ## 📝 License
 
 This project is released under the MIT License. See [LICENSE](LICENSE) for details.
