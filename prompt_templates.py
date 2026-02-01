@@ -32,6 +32,10 @@ class PromptTemplates:
         "description": """For description, write 1-3 concise, engaging sentences that capture the essence, mood, style, and key musical elements. Be specific about genre, instrumentation, and emotional quality.""",
 
         "lyrics": """For lyrics, use sections like [verse], [chorus], [bridge], [outro], [intro]. Keep lyrics natural and singable.
+CRITICAL PRESERVATION RULES for existing lyrics:
+1. Text in quotation marks ("text") → MUST be preserved 100% EXACTLY, word-for-word, character-for-character. This is ABSOLUTE.
+2. Text without quotation marks → Preserve very closely (keep the same meaning, structure, and most words, but minor variations are acceptable).
+3. Only add new sections or extend existing ones. Never completely remove or rewrite the provided text.
 IMPORTANT: When writing lyrics, convert any uppercase abbreviations to dotted form (e.g., "AI" -> "A.I.", "FBI" -> "F.B.I.", "IT" -> "I.T.") so they are pronounced letter by letter.""",
 
         "tags": """For tags, use comma-separated MUSIC PRODUCTION tags ONLY. Each tag is a single word or a short multi-word phrase. Use 5-15 tags total. Choose from these categories:
@@ -146,9 +150,9 @@ class PromptBuilder:
                     continue
 
                 if field in fields:
-                    # Being regenerated - show as draft to improve
+                    # Being regenerated - show as draft to improve/extend
                     if field == "lyrics":
-                        context_parts.append(f"Current {field} draft (to be improved):\n{value}")
+                        context_parts.append(f"Existing lyrics (MUST be preserved exactly, only extend/complete):\n{value}")
                     else:
                         context_parts.append(f"Current {field} draft (to be improved): {value}")
                 else:
