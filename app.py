@@ -180,6 +180,8 @@ def on_generate_music_only(song_title, description, lyrics, tags,
             },
             audio_path=path,
         )
+        # Yield None first to reset the audio player position, then the new file
+        yield None, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
         yield path, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
     except Exception as e:
         yield None, _status_html(f"Error: {e}", "error"), *_btns_enabled()
