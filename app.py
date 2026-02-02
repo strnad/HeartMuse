@@ -412,4 +412,5 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 if __name__ == "__main__":
     import sys
     share = "--share" in sys.argv
-    app.launch(share=share, allowed_paths=[OUTPUT_DIR])
+    from config import SERVER_HOST, SERVER_PORT
+    app.launch(share=share, server_name=SERVER_HOST, server_port=SERVER_PORT, allowed_paths=[OUTPUT_DIR])
