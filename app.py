@@ -190,9 +190,15 @@ def on_unload():
     return _status_html("Pipeline unloaded, GPU memory freed.", "success")
 
 
-def on_clear_all():
-    """Clear all text fields."""
-    return "", "", "", "", _status_html("All fields cleared.", "info")
+def on_clear_all(gen_desc, gen_title, gen_lyrics, gen_tags, desc, title, lyrics, tags):
+    """Clear text fields that have their checkboxes checked."""
+    new_desc = "" if gen_desc else desc
+    new_title = "" if gen_title else title
+    new_lyrics = "" if gen_lyrics else lyrics
+    new_tags = "" if gen_tags else tags
+    cleared = [name for name, checked in [("description", gen_desc), ("title", gen_title), ("lyrics", gen_lyrics), ("tags", gen_tags)] if checked]
+    msg = f"Cleared: {', '.join(cleared)}" if cleared else "Nothing selected to clear."
+    return new_desc, new_title, new_lyrics, new_tags, _status_html(msg, "info")
 
 
 def render_history():
@@ -400,7 +406,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         unload_btn.click(on_unload, [], [status_box])
 
         # Clear button
-        clear_btn.click(on_clear_all, [], [song_desc, song_title_box, lyrics_box, tags_box, status_box])
+        clear_btn.click(on_clear_all, [gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb, song_desc, song_title_box, lyrics_box, tags_box], [song_desc, song_title_box, lyrics_box, tags_box, status_box])
 
     with gr.Tab("History") as history_tab:
         history_html = gr.HTML(value=render_history())
