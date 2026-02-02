@@ -6,3 +6,4 @@ output/
 heartlib/
 .env
 CLAUDE.md
+.claude/
