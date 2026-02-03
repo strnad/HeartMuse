@@ -39,7 +39,7 @@ DEFAULT_OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 DEFAULT_OPENAI_MODELS = [
     m.strip()
     for m in os.environ.get(
-        "OPENAI_MODELS", "gpt-4o-mini,gpt-4o,gpt-4.1-mini,gpt-4.1,o4-mini,gpt-5-mini,gpt-5,gpt-5-2"
+        "OPENAI_MODELS", "gpt-4o-mini,gpt-4o,gpt-4.1-mini,gpt-4.1,o4-mini,gpt-5-mini,gpt-5,gpt-5.2"
     ).split(",")
     if m.strip()
 ]
