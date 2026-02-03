@@ -1,226 +1,279 @@
-# 🎵 HeartMuse - AI Music Generator with Smart Lyrics
+# HeartMuse - AI Music Generator with Smart Lyrics
 
-**HeartMuse** is an intuitive web-based interface for creating high-quality AI-generated music **completely locally** on your machine. It combines the power of **HeartMuLa** (state-of-the-art open-source music generation model for local inference) with intelligent lyrics generation using local LLMs, giving you complete creative control without relying on cloud services.
+**HeartMuse** is an intuitive web-based interface for creating high-quality AI-generated music **completely locally** on your machine. It combines the power of **HeartMuLa** (state-of-the-art open-source music generation model) with intelligent lyrics generation using local LLMs, giving you complete creative control without relying on cloud services.
 
-## ✨ What Makes HeartMuse Special?
+![HeartMuse Interface](docs/screenshot.png)
 
-While [HeartMuLa](https://github.com/HeartMuLa/heartlib) provides state-of-the-art music generation capabilities, **HeartMuse** extends it with:
+## Get Started in 2 Minutes
 
-- 🎨 **User-Friendly Web Interface** - No command-line expertise needed
-- 📝 **Smart Lyrics Generation** - Leverages local Ollama models or OpenAI API to automatically generate coherent, themed lyrics from simple descriptions
-- 🏷️ **Intelligent Tagging** - Automatically generates appropriate music style tags
-- 💾 **Complete Privacy** - Run 100% locally with Ollama (no data leaves your machine)
-- 📚 **Generation History** - Browse, replay, and manage all your previous creations
-- ⚙️ **Flexible Configuration** - Easy-to-use controls for fine-tuning generation parameters
-
-## 🎯 Features
-
-### Smart Text Generation
-- **Describe Your Vision**: Simply write what kind of song you want (e.g., "upbeat pop song about summer adventures")
-- **Automatic Lyrics**: AI generates full lyrics matching your description and chosen theme
-- **Song Titles**: Creative, relevant titles generated automatically
-- **Style Tags**: Intelligent tagging system for music genre, mood, and instrumentation
-
-### Powerful Music Generation
-- **HeartMuLa 3B Model**: State-of-the-art open-source model for local music generation (3 billion parameters, RL-trained)
-- **High-Fidelity Audio**: Uses HeartCodec for superior audio quality
-- **Customizable Parameters**: Control temperature, CFG scale, Top-K sampling, and duration
-- **GPU Acceleration**: CUDA support with efficient memory management and lazy loading (reduces VRAM usage)
-- **Memory Efficient**: Lazy loading feature allows generation on GPUs with limited VRAM
-
-### Dual LLM Backend Support
-- **Ollama** (Recommended): Run completely locally with models like `glm-4.7-flash`, `llama3`, `mistral`, etc.
-- **OpenAI API**: Use GPT-4o, GPT-4o-mini, or other OpenAI models for lyrics generation
-
-### Seamless Workflow
-1. Enter a song description
-2. Let AI generate lyrics, title, and tags (or write your own)
-3. Click "Generate Music" and get professional-quality audio
-4. Browse your creation history anytime
-
-## 🚀 Quick Start
-
-### Prerequisites
-- **Git** - For cloning repositories and submodules
-- **Python 3.10 - 3.12** (3.10 recommended by HeartMuLa authors; newer versions may not work)
-- **NVIDIA GPU with CUDA 12.4+** (recommended **12GB VRAM**, 8GB VRAM minimum, for HeartMuLa-3B model)
-- **Ollama** (optional, for local lyrics generation) - [Download Ollama](https://ollama.ai)
-
-### Installation
-
-**Linux / macOS:**
 ```bash
-git clone https://github.com/yourusername/heartmuse.git
+# 1. Clone and install
+git clone https://github.com/strnad/heartmuse.git
 cd heartmuse
-./install.sh
+./install.sh      # Linux/macOS
+# or: install.bat   # Windows
+
+# 2. Run
+./run.sh          # Linux/macOS
+# or: run.bat       # Windows
 ```
 
-**Windows:**
-```bash
-git clone https://github.com/yourusername/heartmuse.git
-cd heartmuse
-install.bat
-```
+Open **http://localhost:7860** and start creating!
 
-The installer will:
-- Create a Python virtual environment
-- Clone the HeartMuLa library
-- Install all dependencies
-- Prepare your system for music generation
-
-### Running HeartMuse
-
-**Linux / macOS:**
-```bash
-./run.sh
-```
-
-**Windows:**
-```bash
-run.bat
-```
-
-Open your browser to **http://localhost:7860** and start creating!
-
-## ⚙️ Configuration
-
-Copy `.env.example` to `.env` and customize. See the file for available options and their descriptions.
-
-### Using Ollama (100% Local)
-
-1. Install Ollama from [ollama.ai](https://ollama.ai)
-2. Download a model: `ollama pull glm-4.7-flash` (or `llama3`, `mistral`, etc.)
-3. Make sure Ollama is running: `ollama serve`
-4. Set `LLM_BACKEND=Ollama` in your `.env`
-
-### Using OpenAI API
-
-1. Get your API key from [platform.openai.com](https://platform.openai.com)
-2. Set `OPENAI_API_KEY` in your `.env`
-3. Set `LLM_BACKEND=OpenAI`
-
-## 📖 How It Works
-
-HeartMuse orchestrates a two-stage generation pipeline:
-
-### Stage 1: Text Generation (LLM)
-- Takes your song description
-- Generates contextually appropriate lyrics
-- Creates a catchy title
-- Suggests music style tags (genre, mood, instruments)
-
-### Stage 2: Music Generation (HeartMuLa)
-- Processes lyrics and tags through HeartMuLa's 3B parameter model
-- Generates high-fidelity audio using HeartCodec
-- Saves output with complete metadata
-
-All generations are saved to the `output/` directory with JSON metadata, making it easy to track your creative journey.
-
-## 🎓 Examples
-
-### Example 1: Upbeat Pop Song
-**Description**: "Energetic pop song about chasing dreams"
-
-**Generated Output**:
-- **Title**: "Dreams in Motion"
-- **Lyrics**: Full verses and chorus about ambition and perseverance
-- **Tags**: `pop, upbeat, energetic, electronic, synthesizer`
-- **Audio**: 2-3 minute high-quality music track
-
-### Example 2: Melancholic Ballad
-**Description**: "Slow, emotional ballad about lost love"
-
-**Generated Output**:
-- **Title**: "Fading Echoes"
-- **Lyrics**: Heartfelt verses about memories and longing
-- **Tags**: `ballad, slow, melancholic, piano, emotional`
-- **Audio**: Emotive instrumental with appropriate pacing
-
-## 🙏 Credits & Acknowledgments
-
-HeartMuse is built on top of the incredible work by the **HeartMuLa** team:
-
-- **HeartMuLa Project**: [github.com/HeartMuLa/heartlib](https://github.com/HeartMuLa/heartlib)
-- **Models**: HeartMuLa-RL-oss-3B (state-of-the-art for local music generation), HeartCodec-oss
-- **Research Papers**: Check the [HeartMuLa repository](https://github.com/HeartMuLa/heartlib) for technical details
-
-**Huge thanks to the HeartMuLa authors** for creating and open-sourcing their state-of-the-art music generation technology, making professional-quality AI music generation accessible to everyone for local inference!
-
-## 🛠️ Technology Stack
-
-- **[HeartMuLa](https://github.com/HeartMuLa/heartlib)** - 3B parameter music generation model
-- **[Gradio](https://gradio.app)** - Web interface framework
-- **[Ollama](https://ollama.ai)** - Local LLM inference
-- **[OpenAI API](https://openai.com)** - Cloud LLM option
-- **PyTorch** - Deep learning backend
-- **Python 3.10 - 3.12** - Core runtime
-
-## 📋 System Requirements
-
-**Required**:
-- Git
-- Python 3.10 - 3.12 (3.10 recommended)
-- NVIDIA GPU with **8GB+ VRAM** (e.g., RTX 3070, RTX 4060, or better)
-- CUDA 12.4+
-- 16GB system RAM
-- 20GB disk space (for models and generated audio)
-
-**Memory Optimization**:
-- Lazy loading is enabled by default (reduces VRAM footprint)
-- Manual "Unload Model" button frees GPU memory between generations
-- For GPUs with less VRAM, reduce `MUSIC_MAX_LENGTH_SEC` to generate shorter clips
-
-## 🐛 Troubleshooting
-
-### Models Not Downloading
-The first run automatically downloads ~3GB of model weights from Hugging Face. Ensure you have:
-- Stable internet connection
-- Sufficient disk space in the `ckpt/` directory
-
-### Out of Memory Errors
-- Use the "Unload Model" button between generations
-- Reduce `MUSIC_MAX_LENGTH_SEC` in GUI or `.env`
-
-### Installation Problems
-- Make sure you are using **Python 3.10 - 3.12** (other versions are not supported)
-- Update your NVIDIA drivers to the latest version
-
-### Ollama Connection Issues
-- Ensure Ollama is running: `ollama serve`
-- Check `OLLAMA_URL` matches your Ollama installation
-- Verify the model is downloaded: `ollama list`
-
-## 💖 Support the Project
-
-If HeartMuse saves you time or helps you create something cool, consider supporting development 🙏
-
-### Sponsor via GitHub
-[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ff69b4?style=for-the-badge&logo=github)](https://github.com/sponsors/strnad)
-
-### Donate with Bitcoin
-`bc1qgsn45g02wran4lph5gsyqtk0k7t98zsg6qur0y`
-
-## 📝 License
-
-This project is released under the MIT License. See [LICENSE](LICENSE) for details.
-
-The HeartMuLa library has its own license - please refer to the [HeartMuLa repository](https://github.com/HeartMuLa/heartlib) for licensing information.
-
-## 🤝 Contributing
-
-Contributions are welcome! Feel free to:
-- Report bugs via GitHub Issues
-- Suggest new features
-- Submit pull requests
-
-## 📧 Support
-
-For questions and support:
-- Open an issue on GitHub
-- Check the [HeartMuLa documentation](https://github.com/HeartMuLa/heartlib)
+> **That's it!** The installer automatically creates a virtual environment, clones the HeartMuLa library, and installs all dependencies. AI models download automatically on first generation.
 
 ---
 
-**Made with ❤️ using HeartMuLa | Developed with assistance from [Claude Code](https://claude.ai/code)**
+## Why HeartMuse?
+
+### Flexible Text Generation - Total Creative Control
+
+HeartMuse features a **modular, field-by-field generation system** that adapts to your creative workflow. Every field has its own "Generate/Enhance" checkbox, giving you granular control over what AI generates and what you write yourself.
+
+#### Four Independent Fields, Endless Combinations
+
+| Field | What It Does | Generate/Enhance Checkbox |
+|-------|-------------|---------------------------|
+| **Description** | Your creative brief for the song | AI can expand vague ideas into detailed descriptions |
+| **Title** | Song name | AI suggests catchy, thematic titles |
+| **Lyrics** | Full song text with sections | AI writes/extends verses, choruses, bridges |
+| **Tags** | Music production tags for HeartMuLa | AI suggests genre, mood, instruments, tempo |
+
+**Each checkbox is independent** - mix and match any combination:
+- All four checked - AI generates everything from scratch
+- Only lyrics checked - AI writes lyrics, you control title and tags
+- Title + tags checked - You write lyrics, AI handles metadata
+- Nothing checked - Use exactly what you entered, no AI changes
+
+#### Context-Aware Intelligence
+
+The magic happens when you **provide partial content**:
+
+```
++----------------------------------+--------------------------------+
+| You provide:                     | AI understands:                |
++----------------------------------+--------------------------------+
+| Description: "upbeat summer"     | -> Uses as creative direction  |
+| Title: (empty)                   | -> Will generate               |
+| Lyrics: "Feel the sunshine"      | -> Context for generation      |
+| Tags: (empty)                    | -> Will generate               |
+|                                                                   |
+| Checkboxes: [x] Title  [x] Tags  [ ] Lyrics                       |
+|                                                                   |
+| Result: AI generates title and tags that match YOUR lyrics        |
+|         and description. Your lyrics stay untouched.              |
++-------------------------------------------------------------------+
+```
+
+**Unchecked fields with values become context** - AI reads them but won't modify them. This ensures coherent results that respect your creative input.
+
+#### Smart Lyrics Preservation
+
+When extending existing lyrics, HeartMuse offers **two levels of protection**:
+
+| Syntax | Protection Level | Use Case |
+|--------|-----------------|----------|
+| `"exact text"` | **100% locked** - never changed, character-for-character | Your signature lines, hooks |
+| `regular text` | **Preserved** - meaning kept, minor polish allowed | Draft verses you want improved |
+
+**Example:**
+```
+[chorus]
+"This exact line will never change!"
+This line might get slight improvements
+```
+
+Result: The quoted line is untouchable. The unquoted line may be refined while keeping its meaning.
+
+#### Extend, Don't Replace
+
+When "Generate/Enhance" is checked for lyrics that already have content:
+- AI **adds** new sections (verses, bridge, outro)
+- AI **completes** unfinished sections
+- AI **preserves** everything you wrote
+- AI **never deletes** your content
+- AI **never rewrites** existing sections from scratch
+
+#### Duration-Aware Lyrics
+
+Set your target song length, and AI adjusts lyrics accordingly:
+
+| Duration | AI Behavior |
+|----------|-------------|
+| Under 60s | Short and punchy - 1-2 sections |
+| 60-120s | Standard structure - verse, chorus, verse |
+| Over 120s | Extended - multiple verses, bridge, outro |
+
+#### From-Scratch Creative Mode
+
+Leave all fields empty and click "Generate Text" - AI creates a completely original song concept:
+- Invents a unique theme and story
+- Writes complete lyrics with proper structure
+- Suggests a fitting title
+- Recommends appropriate musical tags
+
+**Each generation is different** - use this for inspiration or when you want to be surprised!
+
+---
+
+### Real-World Workflow Examples
+
+#### Example 1: Full AI Generation
+```
+Input:   (everything empty, all checkboxes checked)
+Output:  Complete original song - title, lyrics, tags, ready for music generation
+```
+
+#### Example 2: Your Lyrics, AI Metadata
+```
+Input:   Your complete lyrics in the Lyrics field
+         [ ] Description  [ ] Lyrics  [x] Title  [x] Tags
+Output:  AI suggests a perfect title and musical tags that match YOUR lyrics
+```
+
+#### Example 3: Expand a Hook
+```
+Input:   Lyrics: "[chorus]\nDancing in the moonlight"
+         [x] Lyrics checked
+Output:  AI keeps your chorus and adds verses, bridge, outro around it
+```
+
+#### Example 4: Protected Refrain + AI Verses
+```
+Input:   Lyrics:
+         [chorus]
+         "We are the champions, my friend"
+         "And we'll keep on fighting till the end"
+
+         [verse]
+         (something about struggle and victory)
+
+         [x] Lyrics checked
+
+Output:  Quoted chorus: 100% unchanged
+         Verse placeholder: AI writes full lyrics about struggle and victory
+```
+
+#### Example 5: Enhance Vague Description
+```
+Input:   Description: "sad piano song"
+         [x] Description checked
+Output:  Description expanded to: "A melancholic piano ballad with introspective
+         lyrics about lost love, featuring gentle arpeggios and emotional vocal
+         delivery in a minor key"
+```
+
+#### Example 6: Iterative Refinement
+```
+Round 1: Generate title + lyrics from description
+Round 2: Read lyrics, uncheck lyrics, add specific tags manually
+Round 3: Generate music with your curated combination
+```
+
+---
+
+### 100% Local & Private
+
+- **Ollama backend** - everything runs on your computer, no data leaves your machine
+- **Or OpenAI API** - for those who prefer cloud models
+- **Switch with one click** - choose your backend based on the situation
+
+### Effortless HeartMuLa Setup
+
+Forget manual model downloads, path configuration, and dependency hell:
+
+```
+./install.sh  ->  Done!
+```
+
+HeartMuse handles everything:
+- Creates an isolated Python environment
+- Clones and installs [HeartMuLa library](https://github.com/HeartMuLa/heartlib)
+- Installs all dependencies automatically
+- Downloads models on first use (from Hugging Face)
+- Configures optimal settings for your hardware
+
+---
+
+## Configuration
+
+Create a `.env` file (or copy `.env.example`):
+
+```bash
+# LLM Backend (Ollama = local, OpenAI = cloud)
+LLM_BACKEND=Ollama
+
+# For Ollama
+OLLAMA_MODEL=glm-4.7-flash
+
+# For OpenAI
+# OPENAI_API_KEY=sk-...
+
+# Music generation parameters
+MUSIC_MAX_LENGTH_SEC=120
+```
+
+### Setting Up Ollama (Recommended)
+
+```bash
+# 1. Install Ollama from https://ollama.ai
+# 2. Download a model
+ollama pull glm-4.7-flash
+
+# 3. Start (if not running automatically)
+ollama serve
+```
+
+## How It Works
+
+```
++------------------+     +------------------+     +------------------+
+|   Your Input     | --> |   LLM (Ollama/   | --> |   HeartMuLa      |
+|   + checkboxes   |     |   OpenAI)        |     |   Music Gen      |
++------------------+     |                  |     |                  |
+                         |  Generates:      |     |  Creates:        |
+                         |  - Title         |     |  - Audio file    |
+                         |  - Lyrics        |     |  - High-quality  |
+                         |  - Tags          |     |    music         |
+                         +------------------+     +------------------+
+```
+
+## Memory Optimization
+
+For GPUs with limited VRAM:
+
+- **Lazy loading** (default) - reduces VRAM footprint
+- **"Unload Model" button** - frees memory between generations
+- **Shorter song length** - reduce `MUSIC_MAX_LENGTH_SEC`
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| "Out of memory" | Reduce song length, use "Unload Model" |
+| Ollama not connecting | Verify `ollama serve` is running |
+| Models not downloading | Check internet connection |
+
+## Acknowledgments
+
+HeartMuse builds on the excellent work by the **HeartMuLa** team:
+- [HeartMuLa/heartlib](https://github.com/HeartMuLa/heartlib) - Music generation model
+- HeartCodec - High-quality audio codec
+
+## Support the Project
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub-ff69b4?style=for-the-badge&logo=github)](https://github.com/sponsors/strnad)
+
+**Bitcoin:** `bc1qgsn45g02wran4lph5gsyqtk0k7t98zsg6qur0y`
+
+## License
+
+MIT License - see [LICENSE](LICENSE)
+
+The HeartMuLa library has its own license - refer to the [HeartMuLa repository](https://github.com/HeartMuLa/heartlib).
+
+---
+
+**Made with HeartMuLa | Developed with assistance from [Claude Code](https://claude.ai/code)**
 
 *Create music with AI, own your creativity*
