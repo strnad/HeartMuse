@@ -1,7 +1,10 @@
+import logging
 import re
 import requests
 from openai import OpenAI
 from prompt_templates import PromptBuilder
+
+logger = logging.getLogger(__name__)
 
 
 def _ollama_generate(prompt, system, base_url, model, temperature=0.7, timeout=120):
@@ -25,26 +28,49 @@ def _ollama_generate(prompt, system, base_url, model, temperature=0.7, timeout=1
         resp.raise_for_status()
         return resp.json()["message"]["content"]
     except requests.HTTPError:
-        pass
+        logger.info("Ollama /api/chat failed, falling back to /api/generate")
+    except requests.ConnectionError:
+        raise ConnectionError(
+            f"Cannot connect to Ollama at {base_url}. "
+            "Is Ollama running? Start it with 'ollama serve'."
+        )
+    except requests.Timeout:
+        raise TimeoutError(
+            f"Ollama request timed out after {timeout}s. "
+            "Try increasing the timeout or using a smaller model."
+        )
 
     # Fallback to /api/generate
-    resp = requests.post(
-        f"{base_url}/api/generate",
-        json={
-            "model": model,
-            "system": system,
-            "prompt": prompt,
-            "stream": False,
-            "options": options,
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return resp.json()["response"]
+    try:
+        resp = requests.post(
+            f"{base_url}/api/generate",
+            json={
+                "model": model,
+                "system": system,
+                "prompt": prompt,
+                "stream": False,
+                "options": options,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["response"]
+    except requests.ConnectionError:
+        raise ConnectionError(
+            f"Cannot connect to Ollama at {base_url}. "
+            "Is Ollama running? Start it with 'ollama serve'."
+        )
+    except requests.Timeout:
+        raise TimeoutError(
+            f"Ollama request timed out after {timeout}s. "
+            "Try increasing the timeout or using a smaller model."
+        )
 
 
 def _openai_generate(prompt, system, api_key, base_url, model, temperature=0.7, timeout=120):
     """Call OpenAI-compatible API."""
+    if not api_key:
+        raise ValueError("OpenAI API key is not configured. Set OPENAI_API_KEY in your .env file.")
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
     response = client.chat.completions.create(
         model=model,
@@ -81,17 +107,27 @@ def _call_llm(prompt, system, backend, **kwargs):
         raise ValueError(f"Unknown backend: {backend}")
 
 
+_FIELD_PATTERNS = {
+    "description": r'===DESCRIPTION===\s*(.*?)\s*===END_DESCRIPTION===',
+    "title": r'===TITLE===\s*(.*?)\s*===END_TITLE===',
+    "lyrics": r'===LYRICS===\s*(.*?)\s*===END_LYRICS===',
+    "tags": r'===TAGS===\s*(.*?)\s*===END_TAGS===',
+}
+
 
 def generate_checked_fields(description, title, lyrics, tags,
-                            gen_title=True, gen_lyrics=True, gen_tags=True,
+                            gen_desc=False, gen_title=True, gen_lyrics=True, gen_tags=True,
                             backend="ollama", max_length_sec=None, **kwargs):
     """Generate multiple fields in a single LLM call.
 
     Fields that are not checked for generation but have values are provided
-    as context to the LLM. Returns dict with keys 'title', 'lyrics', 'tags'
-    containing either the generated or original values.
+    as context to the LLM. Returns dict with keys 'description', 'title',
+    'lyrics', 'tags' containing either the generated or original values.
+    Also returns 'failed_fields' list with names of fields that failed to parse.
     """
     fields_to_generate = []
+    if gen_desc:
+        fields_to_generate.append("description")
     if gen_title:
         fields_to_generate.append("title")
     if gen_lyrics:
@@ -100,7 +136,7 @@ def generate_checked_fields(description, title, lyrics, tags,
         fields_to_generate.append("tags")
 
     if not fields_to_generate:
-        return {"title": title, "lyrics": lyrics, "tags": tags}
+        return {"description": description, "title": title, "lyrics": lyrics, "tags": tags, "failed_fields": []}
 
     # Build context dict for PromptBuilder
     context = {
@@ -116,23 +152,17 @@ def generate_checked_fields(description, title, lyrics, tags,
 
     response = _call_llm(user_prompt, system_prompt, backend, **kwargs)
 
-    result = {"title": title, "lyrics": lyrics, "tags": tags}
+    result = {"description": description, "title": title, "lyrics": lyrics, "tags": tags, "failed_fields": []}
 
-    # Parse response
-    if gen_title:
-        m = re.search(r'===TITLE===\s*(.*?)\s*===END_TITLE===', response, re.DOTALL)
+    # Parse response for each requested field
+    for field in fields_to_generate:
+        pattern = _FIELD_PATTERNS[field]
+        m = re.search(pattern, response, re.DOTALL)
         if m:
-            result["title"] = m.group(1).strip()
-
-    if gen_lyrics:
-        m = re.search(r'===LYRICS===\s*(.*?)\s*===END_LYRICS===', response, re.DOTALL)
-        if m:
-            result["lyrics"] = m.group(1).strip()
-
-    if gen_tags:
-        m = re.search(r'===TAGS===\s*(.*?)\s*===END_TAGS===', response, re.DOTALL)
-        if m:
-            result["tags"] = m.group(1).strip()
+            result[field] = m.group(1).strip()
+        else:
+            logger.warning("Failed to parse %s from LLM response (markers not found)", field)
+            result["failed_fields"].append(field)
 
     return result
 
@@ -158,10 +188,6 @@ def list_ollama_models(base_url="http://localhost:11434"):
         resp.raise_for_status()
         models = resp.json().get("models", [])
         return [m["name"] for m in models]
-    except Exception as e:
+    except Exception:
+        logger.warning("Failed to list Ollama models at %s", base_url)
         return []
-
-
-def generate_with_ollama(backend, system_prompt, user_prompt, **kwargs):
-    """Generic LLM generation with custom system and user prompts."""
-    return _call_llm(user_prompt, system_prompt, backend, **kwargs)

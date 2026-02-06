@@ -1,9 +1,12 @@
+import logging
 import os
 import re
 import json
 import tempfile
 from datetime import datetime
 from config import OUTPUT_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_filename(title, max_len=50):
@@ -66,7 +69,11 @@ def delete_generation(audio_file):
     """Delete a generation's audio and metadata files. Returns True on success."""
     if not audio_file:
         return False
-    audio_path = os.path.join(OUTPUT_DIR, audio_file)
+    audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
+    # Prevent path traversal
+    if not audio_path.startswith(os.path.realpath(OUTPUT_DIR) + os.sep):
+        logger.warning("Path traversal attempt blocked: %s", audio_file)
+        return False
     json_path = os.path.splitext(audio_path)[0] + ".json"
     deleted = False
     for p in (audio_path, json_path):

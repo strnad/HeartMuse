@@ -1,5 +1,5 @@
+import logging
 import os
-import re
 import html as html_mod
 import gradio as gr
 from config import (
@@ -9,10 +9,13 @@ from config import (
     DEFAULT_LLM_TIMEOUT, OUTPUT_DIR,
 )
 from model_manager import is_ready_for_generation
-from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models, _call_llm
+from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
 from generator import generate_music, unload_pipeline
-from history import generate_output_path, save_generation, load_history
-from prompt_templates import PromptBuilder
+from history import generate_output_path, save_generation, load_history, delete_generation
+
+logger = logging.getLogger(__name__)
+
+HISTORY_PAGE_SIZE = 10
 
 
 def on_list_ollama(ollama_url):
@@ -33,8 +36,8 @@ def _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload):
     if auto_unload and backend == "Ollama":
         try:
             unload_ollama_model(base_url=ollama_url, model=ollama_model)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to unload Ollama model: %s", e)
 
 
 def _btns_disabled():
@@ -46,6 +49,7 @@ def _btns_enabled():
 
 def _status_html(message, style="info"):
     """Return styled HTML for status messages with optional progress bar."""
+    message = html_mod.escape(str(message))
     colors = {
         "info": ("#1a3a5c", "#3b82f6", "#e0f2fe"),
         "success": ("#14532d", "#22c55e", "#dcfce7"),
@@ -88,37 +92,12 @@ def on_generate_text(description, title, lyrics, tags,
     try:
         kwargs = _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, llm_temp, llm_timeout)
 
-        # Generate or enhance description if requested
-        final_description = description
-        if gen_desc:
-            # Build context dict for PromptBuilder
-            context = {
-                "description": description,
-                "title": title,
-                "lyrics": lyrics,
-                "tags": tags,
-            }
-
-            # Use PromptBuilder to create prompts
-            system_prompt = PromptBuilder.build_system_prompt(["description"])
-            user_prompt = PromptBuilder.build_user_prompt(["description"], context, max_length_sec)
-
-            # Generate description using LLM
-            response = _call_llm(user_prompt, system_prompt, backend.lower(), **kwargs)
-
-            # Parse description from response
-            m = re.search(r'===DESCRIPTION===\s*(.*?)\s*===END_DESCRIPTION===', response, re.DOTALL)
-            if m:
-                final_description = m.group(1).strip()
-            else:
-                # Fallback: use entire response if markers not found
-                final_description = response.strip()
-
         result = generate_checked_fields(
-            description=final_description,
+            description=description,
             title=title,
             lyrics=lyrics,
             tags=tags,
+            gen_desc=gen_desc,
             gen_title=gen_title,
             gen_lyrics=gen_lyrics,
             gen_tags=gen_tags,
@@ -127,9 +106,22 @@ def on_generate_text(description, title, lyrics, tags,
             **kwargs,
         )
         _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload)
-        generated = [f for f, checked in [("description", gen_desc), ("title", gen_title), ("lyrics", gen_lyrics), ("tags", gen_tags)] if checked]
-        yield final_description, result["title"], result["lyrics"], result["tags"], _status_html(f"Generated: {', '.join(generated)}", "success"), *_btns_enabled()
+
+        # Build status message reporting what actually succeeded vs failed
+        requested = [f for f, checked in [("description", gen_desc), ("title", gen_title), ("lyrics", gen_lyrics), ("tags", gen_tags)] if checked]
+        failed = result.get("failed_fields", [])
+        succeeded = [f for f in requested if f not in failed]
+
+        if failed and succeeded:
+            status = _status_html(f"Generated: {', '.join(succeeded)}. Failed to parse: {', '.join(failed)}", "info")
+        elif failed and not succeeded:
+            status = _status_html(f"LLM did not return expected format for: {', '.join(failed)}", "error")
+        else:
+            status = _status_html(f"Generated: {', '.join(succeeded)}", "success")
+
+        yield result["description"], result["title"], result["lyrics"], result["tags"], status, *_btns_enabled()
     except Exception as e:
+        logger.error("Text generation failed: %s", e)
         yield description, title, lyrics, tags, _status_html(f"Error: {e}", "error"), *_btns_enabled()
 
 
@@ -151,6 +143,9 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         if not is_ready_for_generation():
             yield "", _status_html("Downloading required models (this may take a while)...", "progress"), *_btns_disabled()
             ensure_models_downloaded()
+            if not is_ready_for_generation():
+                yield "", _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
+                return
 
         yield "", _status_html("Generating music (this may take a while)...", "progress"), *_btns_disabled()
 
@@ -183,6 +178,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         audio_html = f'<audio controls src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
         yield audio_html, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
     except Exception as e:
+        logger.error("Music generation failed: %s", e)
         yield "", _status_html(f"Error: {e}", "error"), *_btns_enabled()
 
 
@@ -202,64 +198,54 @@ def on_clear_all(gen_desc, gen_title, gen_lyrics, gen_tags, desc, title, lyrics,
     return new_desc, new_title, new_lyrics, new_tags, _status_html(msg, "info")
 
 
-def render_history():
-    import json as json_mod
-    entries = load_history()
-    if not entries:
-        return "<p style='text-align:center;color:#888;padding:40px 0;'>No generations yet.</p>"
+def _build_card_html(e):
+    """Build HTML for a single history card (display only, no interactive elements)."""
+    audio_file = e.get("audio_file", "")
+    audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+    title = html_mod.escape(e.get("song_title", "Untitled"))
+    ts = e.get("timestamp", "")[:16].replace("T", " ")
+    desc = html_mod.escape(e.get("description", ""))
+    tags = html_mod.escape(e.get("tags", ""))
+    lyrics = html_mod.escape(e.get("lyrics", ""))
+    p = e.get("parameters", {})
 
-    cards = []
-    for i, e in enumerate(entries):
-        audio_file = e.get("audio_file", "")
-        audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
-        title = html_mod.escape(e.get("song_title", "Untitled"))
-        ts = e.get("timestamp", "")[:16].replace("T", " ")
-        desc = html_mod.escape(e.get("description", ""))
-        desc_short = html_mod.escape(e.get("description", "")[:120])
-        tags = html_mod.escape(e.get("tags", ""))
-        lyrics = html_mod.escape(e.get("lyrics", ""))
-        p = e.get("parameters", {})
+    audio_html = ""
+    if os.path.isfile(audio_path):
+        audio_html = f'<audio controls src="/gradio_api/file={audio_path}" style="width:100%;margin:10px 0;"></audio>'
 
-        audio_html = ""
-        if os.path.isfile(audio_path):
-            audio_html = f'<audio controls src="/gradio_api/file={audio_path}" style="width:100%;margin:10px 0;"></audio>'
+    tag_pills = ""
+    if e.get("tags", ""):
+        pills = [f'<span style="display:inline-block;background:#2d3748;color:#a0aec0;padding:2px 8px;border-radius:12px;font-size:0.75em;margin:2px;">{html_mod.escape(t.strip())}</span>'
+                 for t in e.get("tags", "").split(",")[:8] if t.strip()]
+        tag_pills = f'<div style="margin:6px 0;">{" ".join(pills)}</div>'
 
-        tag_pills = ""
-        if e.get("tags", ""):
-            pills = [f'<span style="display:inline-block;background:#2d3748;color:#a0aec0;padding:2px 8px;border-radius:12px;font-size:0.75em;margin:2px;">{html_mod.escape(t.strip())}</span>'
-                     for t in e.get("tags", "").split(",")[:8] if t.strip()]
-            tag_pills = f'<div style="margin:6px 0;">{" ".join(pills)}</div>'
+    param_badges = ""
+    if p:
+        badges = []
+        for label, key in [("Temp", "temperature"), ("CFG", "cfg_scale"), ("Top-K", "topk"), ("Length", "max_length_sec")]:
+            val = p.get(key, "?")
+            suffix = "s" if key == "max_length_sec" else ""
+            badges.append(f'<span style="display:inline-block;background:#1a365d;color:#63b3ed;padding:2px 8px;border-radius:8px;font-size:0.75em;margin:2px;">{label}: {val}{suffix}</span>')
+        param_badges = f'<div style="margin:6px 0;">{" ".join(badges)}</div>'
 
-        param_badges = ""
-        if p:
-            badges = []
-            for label, key in [("Temp", "temperature"), ("CFG", "cfg_scale"), ("Top-K", "topk"), ("Length", "max_length_sec")]:
-                val = p.get(key, "?")
-                suffix = "s" if key == "max_length_sec" else ""
-                badges.append(f'<span style="display:inline-block;background:#1a365d;color:#63b3ed;padding:2px 8px;border-radius:8px;font-size:0.75em;margin:2px;">{label}: {val}{suffix}</span>')
-            param_badges = f'<div style="margin:6px 0;">{" ".join(badges)}</div>'
-
-        cards.append(f"""
-<div style="border:1px solid #444;border-radius:12px;padding:16px;margin:10px 0;background:rgba(255,255,255,0.02);transition:border-color 0.2s;" onmouseover="this.style.borderColor='#666'" onmouseout="this.style.borderColor='#444'">
+    return f"""<div style="border:1px solid #444;border-radius:12px;padding:16px;background:rgba(255,255,255,0.02);">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
     <h3 style="margin:0;font-size:1.1em;">{title}</h3>
     <span style="color:#888;font-size:0.8em;white-space:nowrap;margin-left:12px;">{ts}</span>
   </div>
-  {f'<p style="color:#aaa;font-size:0.85em;margin:4px 0;">{desc_short}</p>' if desc_short else ''}
+  {f'<p style="color:#aaa;font-size:0.85em;margin:4px 0;">{desc}</p>' if desc else ''}
   {tag_pills}
   {audio_html}
   {param_badges}
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;color:#7b8cde;font-size:0.85em;">Show full details</summary>
     <div style="margin-top:8px;font-size:0.83em;padding:10px;background:rgba(0,0,0,0.15);border-radius:8px;">
-      {f'<p style="margin:4px 0;"><b>Description:</b> {desc}</p>' if desc else ''}
       <p style="margin:4px 0;"><b>Tags:</b> {tags}</p>
       <p style="margin:8px 0 4px;"><b>Lyrics:</b></p>
       <pre style="white-space:pre-wrap;max-height:250px;overflow-y:auto;padding:8px;border-radius:6px;background:rgba(0,0,0,0.25);">{lyrics}</pre>
     </div>
   </details>
-</div>""")
-    return "\n".join(cards)
+</div>"""
 
 
 # ─── UI ───
@@ -286,15 +272,16 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                     placeholder="A romantic ballad about summer love with piano and strings... (or leave empty to generate randomly)",
                     lines=3,
                     scale=4,
+                    max_lines=10,
                 )
-                gen_desc_cb = gr.Checkbox(value=False, label="Generate/Enhance", scale=1)
+                gen_desc_cb = gr.Checkbox(value=False, label="Auto-generate", scale=1)
 
         # 2. Song Details with checkboxes
         gr.Markdown("### Song details")
 
         with gr.Row():
             song_title_box = gr.Textbox(label="Song Title", placeholder="Enter or leave empty to generate...", scale=4)
-            gen_title_cb = gr.Checkbox(value=True, label="Generate/Enhance", scale=1)
+            gen_title_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
 
         with gr.Row():
             lyrics_box = gr.Textbox(
@@ -303,7 +290,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 lines=10,
                 scale=4,
             )
-            gen_lyrics_cb = gr.Checkbox(value=True, label="Generate/Enhance", scale=1)
+            gen_lyrics_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
 
         with gr.Row():
             tags_box = gr.Textbox(
@@ -311,7 +298,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 placeholder="pop,piano,happy,female vocal",
                 scale=4,
             )
-            gen_tags_cb = gr.Checkbox(value=True, label="Generate/Enhance", scale=1)
+            gen_tags_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
 
         # LLM Settings (moved above Generate Text button)
         with gr.Accordion("LLM Settings", open=False):
@@ -389,7 +376,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         all_btns = [gen_text_btn, gen_music_btn]
 
         # Generate Text button
-        gen_text_event = gen_text_btn.click(
+        gen_text_btn.click(
             on_generate_text,
             [song_desc, song_title_box, lyrics_box, tags_box,
              gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb] + llm_inputs + [max_length],
@@ -397,7 +384,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         )
 
         # Generate Music button
-        gen_music_event = gen_music_btn.click(
+        gen_music_btn.click(
             on_generate_music_only,
             [song_title_box, song_desc, lyrics_box, tags_box] + music_inputs,
             [audio_out, status_box] + all_btns,
@@ -410,10 +397,121 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         clear_btn.click(on_clear_all, [gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb, song_desc, song_title_box, lyrics_box, tags_box], [song_desc, song_title_box, lyrics_box, tags_box, status_box])
 
     with gr.Tab("History") as history_tab:
-        history_html = gr.HTML(value=render_history())
+        history_page = gr.State(value=0)
+        history_status = gr.HTML(value="")
+        page_info = gr.HTML(value="")
 
-        # Auto-refresh when switching to History tab
-        history_tab.select(render_history, [], [history_html])
+        # Fixed card slots (avoids @gr.render and its stale-handler bugs)
+        _card_htmls = []
+        _card_states = []
+        _load_btns = []
+        _delete_btns = []
+        for _i in range(HISTORY_PAGE_SIZE):
+            _st = gr.State(value=None)
+            _card_states.append(_st)
+            _html = gr.HTML(visible=False)
+            with gr.Row(visible=False) as _row:
+                _lb = gr.Button("Load to Generator", size="sm", variant="primary", scale=1)
+                _db = gr.Button("Delete", size="sm", variant="stop", scale=1)
+            _card_htmls.append((_html, _row))
+            _load_btns.append(_lb)
+            _delete_btns.append(_db)
+
+        with gr.Row():
+            prev_btn = gr.Button("Previous", size="sm")
+            next_btn = gr.Button("Next", size="sm")
+
+        # Build the flat output list: [html0, row0, state0, html1, row1, state1, ..., page_info, history_page]
+        _refresh_outputs = []
+        for _i in range(HISTORY_PAGE_SIZE):
+            _html_comp, _row_comp = _card_htmls[_i]
+            _refresh_outputs.extend([_html_comp, _row_comp, _card_states[_i]])
+        _refresh_outputs.extend([page_info, history_page])
+
+        def _refresh_history(page):
+            """Rebuild all card slots for the given page."""
+            page = int(page or 0)
+            entries = load_history()
+            total = len(entries)
+            max_page = max(0, (total - 1) // HISTORY_PAGE_SIZE) if total > 0 else 0
+            page = min(page, max_page)
+
+            start = page * HISTORY_PAGE_SIZE
+            page_entries = entries[start:start + HISTORY_PAGE_SIZE]
+
+            updates = []
+            for i in range(HISTORY_PAGE_SIZE):
+                if i < len(page_entries):
+                    e = page_entries[i]
+                    updates.append(gr.HTML(value=_build_card_html(e), visible=True))
+                    updates.append(gr.Row(visible=True))
+                    updates.append(e)
+                else:
+                    updates.append(gr.HTML(value="", visible=False))
+                    updates.append(gr.Row(visible=False))
+                    updates.append(None)
+
+            if total > HISTORY_PAGE_SIZE:
+                total_pages = (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
+                info = f'<p style="text-align:center;color:#888;font-size:0.85em;">Showing {start+1}-{min(start + HISTORY_PAGE_SIZE, total)} of {total} (page {page+1}/{total_pages})</p>'
+            elif total == 0:
+                info = '<p style="text-align:center;color:#888;padding:40px 0;">No generations yet.</p>'
+            else:
+                info = ""
+            updates.append(gr.HTML(value=info))
+            updates.append(page)
+            return updates
+
+        # Wire up load handlers (read entry data from per-slot State)
+        def _slot_load(state):
+            if not state:
+                return gr.skip(), gr.skip(), gr.skip(), gr.skip(), _status_html("No entry selected.", "warning")
+            return (
+                state.get("description", ""),
+                state.get("song_title", ""),
+                state.get("lyrics", ""),
+                state.get("tags", ""),
+                _status_html(f"Loaded '{state.get('song_title', 'Untitled')}' into Generator tab.", "success"),
+            )
+
+        # Wire up delete handlers (delete files, then refresh page)
+        def _slot_delete(state, page):
+            if not state:
+                return page, _status_html("No entry to delete.", "warning")
+            delete_generation(state.get("audio_file", ""))
+            return page, _status_html(f"Deleted '{state.get('song_title', 'Untitled')}'.", "success")
+
+        for _i in range(HISTORY_PAGE_SIZE):
+            _load_btns[_i].click(
+                _slot_load,
+                [_card_states[_i]],
+                [song_desc, song_title_box, lyrics_box, tags_box, history_status],
+            )
+            _delete_btns[_i].click(
+                _slot_delete,
+                [_card_states[_i], history_page],
+                [history_page, history_status],
+                js="(...args) => { if (!confirm('Are you sure you want to delete this song?')) throw new Error('cancelled'); return args; }",
+            ).then(
+                _refresh_history, [history_page], _refresh_outputs,
+            )
+
+        # Navigation
+        def _go_prev(page):
+            return max(0, int(page or 0) - 1)
+        def _go_next(page):
+            page = int(page or 0)
+            total = len(load_history())
+            max_page = max(0, (total - 1) // HISTORY_PAGE_SIZE)
+            return min(max_page, page + 1)
+
+        prev_btn.click(_go_prev, [history_page], [history_page]).then(
+            _refresh_history, [history_page], _refresh_outputs)
+        next_btn.click(_go_next, [history_page], [history_page]).then(
+            _refresh_history, [history_page], _refresh_outputs)
+
+        # Refresh when switching to this tab
+        history_tab.select(_refresh_history, [history_page], _refresh_outputs)
 
 
 if __name__ == "__main__":

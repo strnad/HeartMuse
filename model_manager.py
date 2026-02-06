@@ -1,3 +1,4 @@
+import logging
 import os
 
 os.environ["HF_HUB_CACHE"] = os.path.join(os.path.dirname(__file__), "ckpt")
@@ -6,6 +7,8 @@ os.environ["HF_HUB_ETAG_TIMEOUT"] = "300"
 
 from huggingface_hub import snapshot_download, hf_hub_download
 from config import CKPT_DIR, REQUIRED_MODELS, HEARTMULGEN_REPO, HEARTMULGEN_FILES
+
+logger = logging.getLogger(__name__)
 
 
 def get_model_status():
@@ -23,20 +26,19 @@ def is_ready_for_generation():
     return all(downloaded for _, downloaded in get_model_status())
 
 
-def download_all_models(progress=None):
+def download_all_models():
     """Download all required models + config files."""
     ensure_gen_config()
     results = []
-    total = len(REQUIRED_MODELS)
-    for i, model in enumerate(REQUIRED_MODELS):
-        if progress:
-            progress((i, total), desc=f"Downloading {model['name']}...")
+    for model in REQUIRED_MODELS:
         local_path = os.path.join(CKPT_DIR, model["local_dir"])
         os.makedirs(local_path, exist_ok=True)
         try:
             snapshot_download(repo_id=model["repo_id"], local_dir=local_path)
             results.append(f"Downloaded {model['name']}")
+            logger.info("Downloaded %s", model['name'])
         except Exception as e:
+            logger.error("Failed to download %s: %s", model['name'], e)
             results.append(f"Error downloading {model['name']}: {e}")
     return "\n".join(results)
 
