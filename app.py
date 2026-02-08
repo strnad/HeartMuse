@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 import html as html_mod
 import gradio as gr
 from config import (
@@ -65,8 +66,8 @@ def _btns_enabled():
     return gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)
 
 
-def _status_html(message, style="info"):
-    """Return styled HTML for status messages with optional progress bar."""
+def _status_html(message, style="info", stats_html=""):
+    """Return styled HTML for status messages with optional progress bar and stats."""
     message = html_mod.escape(str(message))
     colors = {
         "info": ("#1a3a5c", "#3b82f6", "#e0f2fe"),
@@ -91,7 +92,7 @@ def _status_html(message, style="info"):
         </style>"""
 
     return f"""<div style="padding:12px 16px;border-left:4px solid {border};background:{bg};border-radius:8px;font-size:1.05em;color:#e2e8f0;">
-  {message}{progress_bar}
+  {message}{progress_bar}{stats_html}
 </div>"""
 
 
@@ -123,6 +124,148 @@ def _build_variants_html(variants, autoplay=False):
     return f'<div>{"".join(parts)}</div>'
 
 
+def _get_ram_usage_mb():
+    """Return (used_mb, total_mb) for system RAM, or None if unavailable.
+
+    Supports Linux (/proc/meminfo) and Windows (kernel32.GlobalMemoryStatusEx).
+    """
+    # Linux
+    try:
+        with open("/proc/meminfo") as f:
+            info = {}
+            for line in f:
+                tokens = line.split()
+                if len(tokens) >= 2 and tokens[0].rstrip(":") in ("MemTotal", "MemAvailable"):
+                    info[tokens[0].rstrip(":")] = int(tokens[1])  # kB
+            if "MemTotal" in info and "MemAvailable" in info:
+                total = info["MemTotal"] / 1024
+                used = (info["MemTotal"] - info["MemAvailable"]) / 1024
+                return used, total
+    except (OSError, ValueError):
+        pass
+    # Windows
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX(dwLength=ctypes.sizeof(MEMORYSTATUSEX))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            total = stat.ullTotalPhys / (1024 ** 2)
+            used = (stat.ullTotalPhys - stat.ullAvailPhys) / (1024 ** 2)
+            return used, total
+    except (OSError, AttributeError):
+        pass
+    return None
+
+
+def _read_memory_stats():
+    """Collect current VRAM and RAM usage. Returns dict with available fields."""
+    stats = {}
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(device)
+            stats["gpu_name"] = props.name
+            stats["gpu_total_mb"] = props.total_memory / (1024 ** 2)
+            stats["gpu_allocated_mb"] = torch.cuda.memory_allocated(device) / (1024 ** 2)
+            stats["gpu_peak_mb"] = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+    except Exception:
+        pass
+    ram = _get_ram_usage_mb()
+    if ram:
+        stats["ram_used_mb"], stats["ram_total_mb"] = ram
+    return stats
+
+
+def _get_gpu_utilization():
+    """Return GPU utilization percentage via nvidia-smi, or None."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split("\n")[0])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _get_live_memory_html():
+    """Return compact HTML bar showing current GPU, VRAM and RAM usage."""
+    parts = []
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            used_mb = (total - free) / (1024 ** 2)
+            total_mb = total / (1024 ** 2)
+            pct = used_mb / total_mb * 100 if total_mb else 0
+            gpu_util = _get_gpu_utilization()
+            gpu_str = f"GPU: {gpu_util}%  |  " if gpu_util is not None else ""
+            parts.append(f"{gpu_str}VRAM: {used_mb:,.0f} / {total_mb:,.0f} MB ({pct:.0f}%)")
+    except Exception:
+        pass
+    ram = _get_ram_usage_mb()
+    if ram:
+        used_mb, total_mb = ram
+        pct = used_mb / total_mb * 100 if total_mb else 0
+        parts.append(f"RAM: {used_mb:,.0f} / {total_mb:,.0f} MB ({pct:.0f}%)")
+    if not parts:
+        return ""
+    text = html_mod.escape("  |  ".join(parts))
+    return (
+        f'<div style="padding:6px 12px;background:#0f172a;border:1px solid #1e293b;'
+        f'border-radius:6px;font-family:monospace;font-size:0.82em;color:#64748b;'
+        f'text-align:center;">{text}</div>'
+    )
+
+
+def _format_stats_html(timings=None, mem_stats=None, extra_info=None):
+    """Format generation statistics as a collapsible HTML details block."""
+    rows = []
+    if timings:
+        rows.append("<b>Timing</b>")
+        for label, seconds in timings:
+            rows.append(f"  {html_mod.escape(label)}: {seconds:.1f}s")
+    if mem_stats:
+        rows.append("<b>Memory</b>")
+        if "gpu_name" in mem_stats:
+            rows.append(f"  GPU: {html_mod.escape(mem_stats['gpu_name'])}")
+        if "gpu_peak_mb" in mem_stats:
+            peak = mem_stats["gpu_peak_mb"]
+            total = mem_stats.get("gpu_total_mb", 0)
+            rows.append(f"  VRAM Peak: {peak:,.0f} / {total:,.0f} MB")
+    if extra_info:
+        rows.append("<b>Details</b>")
+        for label, value in extra_info:
+            rows.append(f"  {html_mod.escape(label)}: {html_mod.escape(str(value))}")
+    if not rows:
+        return ""
+    content = "\n".join(rows)
+    return (
+        f'<details style="margin-top:10px;font-size:0.85em;">'
+        f'<summary style="cursor:pointer;color:#7b8cde;">Generation Statistics</summary>'
+        f'<pre style="margin-top:6px;padding:8px;background:rgba(0,0,0,0.2);'
+        f'border-radius:6px;white-space:pre-wrap;color:#a0aec0;">{content}</pre>'
+        f'</details>'
+    )
+
+
 def on_generate_text(description, title, lyrics, tags,
                      gen_desc, gen_title, gen_lyrics, gen_tags,
                      backend, ollama_url, ollama_model,
@@ -138,6 +281,7 @@ def on_generate_text(description, title, lyrics, tags,
     try:
         kwargs = _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, llm_temp, llm_timeout)
 
+        t_start = time.monotonic()
         result = generate_checked_fields(
             description=description,
             title=title,
@@ -151,6 +295,7 @@ def on_generate_text(description, title, lyrics, tags,
             max_length_sec=max_length_sec,
             **kwargs,
         )
+        t_text = time.monotonic() - t_start
         _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload)
 
         # Build status message reporting what actually succeeded vs failed
@@ -158,12 +303,16 @@ def on_generate_text(description, title, lyrics, tags,
         failed = result.get("failed_fields", [])
         succeeded = [f for f in requested if f not in failed]
 
+        stats = _format_stats_html(
+            timings=[("Text generation", t_text)],
+            extra_info=[("Backend", backend), ("Model", ollama_model if backend == "Ollama" else openai_model)],
+        )
         if failed and succeeded:
-            status = _status_html(f"Generated: {', '.join(succeeded)}. Failed to parse: {', '.join(failed)}", "info")
+            status = _status_html(f"Generated: {', '.join(succeeded)}. Failed to parse: {', '.join(failed)}", "info", stats_html=stats)
         elif failed and not succeeded:
-            status = _status_html(f"LLM did not return expected format for: {', '.join(failed)}", "error")
+            status = _status_html(f"LLM did not return expected format for: {', '.join(failed)}", "error", stats_html=stats)
         else:
-            status = _status_html(f"Generated: {', '.join(succeeded)}", "success")
+            status = _status_html(f"Generated: {', '.join(succeeded)}", "success", stats_html=stats)
 
         yield result["description"], result["title"], result["lyrics"], result["tags"], status, *_btns_enabled()
     except Exception as e:
@@ -188,6 +337,9 @@ def on_generate_music_only(song_title, description, lyrics, tags,
     seed_val = None if seed is None or seed < 0 else int(seed)
 
     style_embedding = None
+    t_total_start = time.monotonic()
+    t_style = None
+    variant_timings = []
 
     yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
 
@@ -206,7 +358,9 @@ def on_generate_music_only(song_title, description, lyrics, tags,
             yield gr.skip(), _status_html("Extracting style from reference audio...", "progress"), *_btns_disabled()
             try:
                 from style_transfer import extract_style_embedding
+                t_style_start = time.monotonic()
                 style_embedding = extract_style_embedding(style_audio)
+                t_style = time.monotonic() - t_style_start
                 if style_strength != 1.0:
                     style_embedding = style_embedding * style_strength
             except Exception as e:
@@ -216,6 +370,14 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 
         title = song_title.strip() or "Untitled"
         completed = []  # list of (abs_path, filename) tuples
+
+        # Reset peak memory tracking before generation loop
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
 
         for i in range(num_variants):
             # Check cancellation between variants
@@ -234,6 +396,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 
             output_path = generate_output_path(title)
             variant_seed = (seed_val + i) if seed_val is not None else None
+            t_var_start = time.monotonic()
             path, used_seed = generate_music(
                 lyrics=lyrics,
                 tags=tags,
@@ -247,6 +410,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 style_embedding=style_embedding,
                 seed=variant_seed,
             )
+            variant_timings.append(time.monotonic() - t_var_start)
 
             params = {
                 "temperature": temperature,
@@ -274,12 +438,32 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 
             is_last = i == num_variants - 1
             if is_last:
+                t_total = time.monotonic() - t_total_start
+
+                # Build stats
+                timings = []
+                if t_style is not None:
+                    timings.append(("Style extraction", t_style))
+                for vi, vt in enumerate(variant_timings):
+                    label = f"Music generation (variant {vi + 1})" if num_variants > 1 else "Music generation"
+                    timings.append((label, vt))
+                timings.append(("Total", t_total))
+
+                mem_stats = _read_memory_stats()
+                try:
+                    import torch
+                    device_str = "CUDA" if torch.cuda.is_available() else "CPU"
+                except Exception:
+                    device_str = "CPU"
+                extra = [("Model", variant_name), ("Device", device_str), ("Seed", str(used_seed))]
+                stats = _format_stats_html(timings=timings, mem_stats=mem_stats, extra_info=extra)
+
                 if num_variants > 1:
                     msg = f"All {num_variants} variants generated."
                 else:
                     msg = f"Music saved as {os.path.basename(path)}"
                 yield _build_variants_html(completed, autoplay), \
-                      _status_html(msg, "success"), *_btns_enabled()
+                      _status_html(msg, "success", stats_html=stats), *_btns_enabled()
             else:
                 yield _build_variants_html(completed, autoplay=False), \
                       _status_html(f"Variant {i + 1} of {num_variants} complete.", "info"), \
@@ -807,6 +991,11 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         # Output - styled HTML status
         status_box = gr.HTML(value="", label="Status")
         audio_out = gr.HTML(value="")
+
+        # Live memory monitor
+        memory_monitor = gr.HTML(value=_get_live_memory_html())
+        mem_timer = gr.Timer(value=3, active=True)
+        mem_timer.tick(fn=_get_live_memory_html, outputs=[memory_monitor])
 
         # Memory Management
         with gr.Accordion("Memory Management", open=False):
