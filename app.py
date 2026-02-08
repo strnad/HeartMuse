@@ -145,27 +145,27 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                            lazy_load, model_variant_label):
     """Generate music only from current fields (no LLM)."""
     if not lyrics.strip():
-        yield None, _status_html("Please enter lyrics.", "error"), *_btns_enabled()
+        yield gr.skip(), _status_html("Please enter lyrics.", "error"), *_btns_enabled()
         return
     if not tags.strip():
-        yield None, _status_html("Please enter tags.", "error"), *_btns_enabled()
+        yield gr.skip(), _status_html("Please enter tags.", "error"), *_btns_enabled()
         return
 
     variant_name = _variant_name_from_label(model_variant_label)
 
-    yield "", _status_html("Checking models...", "progress"), *_btns_disabled()
+    yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
 
     try:
         from generator import ensure_models_downloaded
         from model_manager import is_ready_for_generation
         if not is_ready_for_generation(variant_name):
-            yield "", _status_html("Downloading required models (this may take a while)...", "progress"), *_btns_disabled()
+            yield gr.skip(), _status_html("Downloading required models (this may take a while)...", "progress"), *_btns_disabled()
             ensure_models_downloaded(variant_name)
             if not is_ready_for_generation(variant_name):
-                yield "", _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
+                yield gr.skip(), _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
                 return
 
-        yield "", _status_html("Generating music (this may take a while)...", "progress"), *_btns_disabled()
+        yield gr.skip(), _status_html("Generating music (this may take a while)...", "progress"), *_btns_disabled()
 
         title = song_title.strip() or "Untitled"
         output_path = generate_output_path(title)
@@ -198,11 +198,11 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         audio_html = f'<audio controls src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
         yield audio_html, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
     except GenerationCancelled:
-        yield "", _status_html("Generation cancelled.", "info"), *_btns_enabled()
+        yield gr.skip(), _status_html("Generation cancelled.", "info"), *_btns_enabled()
     except Exception as e:
         logger.error("Music generation failed: %s", e)
         e.__traceback__ = None  # release stack frame refs to GPU tensors
-        yield "", _status_html(f"Error: {e}", "error"), *_btns_enabled()
+        yield gr.skip(), _status_html(f"Error: {e}", "error"), *_btns_enabled()
 
 
 def on_unload():
