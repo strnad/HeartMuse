@@ -7,15 +7,30 @@ from config import (
     DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_URL, DEFAULT_OPENAI_KEY,
     DEFAULT_OPENAI_MODELS, DEFAULT_LLM_BACKEND, DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT, OUTPUT_DIR,
+    DEFAULT_LAZY_LOAD, DEFAULT_MODEL_VARIANT, MODEL_VARIANT_LABELS,
 )
 from model_manager import is_ready_for_generation
 from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
-from generator import generate_music, unload_pipeline
+from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled
 from history import generate_output_path, save_generation, load_history, delete_generation
 
 logger = logging.getLogger(__name__)
 
 HISTORY_PAGE_SIZE = 10
+
+# Map display labels to internal variant names
+_VARIANT_CHOICES = list(MODEL_VARIANT_LABELS.values())
+_VARIANT_LABEL_TO_NAME = {v: k for k, v in MODEL_VARIANT_LABELS.items()}
+
+
+def _variant_name_from_label(label):
+    """Convert dropdown label to internal variant name."""
+    return _VARIANT_LABEL_TO_NAME.get(label, "rl")
+
+
+def _variant_label_from_name(name):
+    """Convert internal variant name to dropdown label."""
+    return MODEL_VARIANT_LABELS.get(name, "HeartMuLa 3B RL (Recommended)")
 
 
 def on_list_ollama(ollama_url):
@@ -41,10 +56,10 @@ def _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload):
 
 
 def _btns_disabled():
-    return gr.update(interactive=False), gr.update(interactive=False)
+    return gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=True)
 
 def _btns_enabled():
-    return gr.update(interactive=True), gr.update(interactive=True)
+    return gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)
 
 
 def _status_html(message, style="info"):
@@ -126,7 +141,8 @@ def on_generate_text(description, title, lyrics, tags,
 
 
 def on_generate_music_only(song_title, description, lyrics, tags,
-                           temperature, cfg_scale, topk, max_length_sec, lazy_load):
+                           temperature, cfg_scale, topk, max_length_sec,
+                           lazy_load, model_variant_label):
     """Generate music only from current fields (no LLM)."""
     if not lyrics.strip():
         yield None, _status_html("Please enter lyrics.", "error"), *_btns_enabled()
@@ -135,15 +151,17 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         yield None, _status_html("Please enter tags.", "error"), *_btns_enabled()
         return
 
+    variant_name = _variant_name_from_label(model_variant_label)
+
     yield "", _status_html("Checking models...", "progress"), *_btns_disabled()
 
     try:
         from generator import ensure_models_downloaded
         from model_manager import is_ready_for_generation
-        if not is_ready_for_generation():
+        if not is_ready_for_generation(variant_name):
             yield "", _status_html("Downloading required models (this may take a while)...", "progress"), *_btns_disabled()
-            ensure_models_downloaded()
-            if not is_ready_for_generation():
+            ensure_models_downloaded(variant_name)
+            if not is_ready_for_generation(variant_name):
                 yield "", _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
                 return
 
@@ -158,8 +176,9 @@ def on_generate_music_only(song_title, description, lyrics, tags,
             cfg_scale=cfg_scale,
             topk=topk,
             max_audio_length_ms=int(max_length_sec * 1000),
-            lazy_load=lazy_load,
             output_path=output_path,
+            lazy_load=lazy_load,
+            model_variant=variant_name,
         )
         save_generation(
             song_title=title,
@@ -172,13 +191,17 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 "topk": topk,
                 "max_length_sec": max_length_sec,
                 "lazy_load": lazy_load,
+                "model_variant": variant_name,
             },
             audio_path=path,
         )
         audio_html = f'<audio controls src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
         yield audio_html, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
+    except GenerationCancelled:
+        yield "", _status_html("Generation cancelled.", "info"), *_btns_enabled()
     except Exception as e:
         logger.error("Music generation failed: %s", e)
+        e.__traceback__ = None  # release stack frame refs to GPU tensors
         yield "", _status_html(f"Error: {e}", "error"), *_btns_enabled()
 
 
@@ -295,7 +318,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         with gr.Row():
             tags_box = gr.Textbox(
                 label="Tags (comma-separated)",
-                placeholder="pop,piano,happy,female vocal",
+                placeholder="pop,female,piano,dreamy,80s,lo-fi,chill,slow",
                 scale=4,
             )
             gen_tags_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
@@ -344,7 +367,9 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             topk = gr.Slider(1, 200, value=DEFAULT_GENERATION_PARAMS["topk"], step=1, label="Top-K")
             max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
 
-        gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
+        with gr.Row():
+            gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
+            cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
 
         # Output - styled HTML status
         status_box = gr.HTML(value="", label="Status")
@@ -352,7 +377,17 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
         # Memory Management
         with gr.Accordion("Memory Management", open=False):
-            lazy_load = gr.Checkbox(value=True, label="Lazy Load (lower VRAM usage)")
+            model_variant = gr.Dropdown(
+                choices=_VARIANT_CHOICES,
+                value=_variant_label_from_name(DEFAULT_MODEL_VARIANT),
+                label="Model",
+                info="Select which HeartMuLa model to use. RL version has better style/tag control.",
+            )
+            lazy_load_cb = gr.Checkbox(
+                value=DEFAULT_LAZY_LOAD,
+                label="Lazy Loading",
+                info="Load models on demand and free VRAM between generation stages. Useful for GPUs with limited memory.",
+            )
             ollama_auto_unload = gr.Checkbox(value=True, label="Auto-unload Ollama model before music generation")
             with gr.Row():
                 unload_ollama_btn = gr.Button("Unload Ollama Model", size="sm")
@@ -371,9 +406,9 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             openai_url, openai_model, openai_key,
             llm_temp, llm_timeout, ollama_auto_unload,
         ]
-        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load]
+        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant]
 
-        all_btns = [gen_text_btn, gen_music_btn]
+        all_btns = [gen_text_btn, gen_music_btn, cancel_btn]
 
         # Generate Text button
         gen_text_btn.click(
@@ -392,6 +427,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
         unload_ollama_btn.click(on_unload_ollama, [llm_backend, ollama_url, ollama_model], [ollama_status])
         unload_btn.click(on_unload, [], [status_box])
+        cancel_btn.click(lambda: cancel_generation(), [], [])
 
         # Clear button
         clear_btn.click(on_clear_all, [gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb, song_desc, song_title_box, lyrics_box, tags_box], [song_desc, song_title_box, lyrics_box, tags_box, status_box])

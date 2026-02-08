@@ -115,6 +115,18 @@ _FIELD_PATTERNS = {
 }
 
 
+def _normalize_tags(tags_str: str) -> str:
+    """Normalize comma-separated tags: lowercase, trim, deduplicate, remove empties."""
+    tags = [t.strip().lower() for t in tags_str.split(",")]
+    seen = set()
+    result = []
+    for tag in tags:
+        if tag and tag not in seen:
+            seen.add(tag)
+            result.append(tag)
+    return ",".join(result)
+
+
 def generate_checked_fields(description, title, lyrics, tags,
                             gen_desc=False, gen_title=True, gen_lyrics=True, gen_tags=True,
                             backend="ollama", max_length_sec=None, **kwargs):
@@ -159,7 +171,10 @@ def generate_checked_fields(description, title, lyrics, tags,
         pattern = _FIELD_PATTERNS[field]
         m = re.search(pattern, response, re.DOTALL)
         if m:
-            result[field] = m.group(1).strip()
+            value = m.group(1).strip()
+            if field == "tags":
+                value = _normalize_tags(value)
+            result[field] = value
         else:
             logger.warning("Failed to parse %s from LLM response (markers not found)", field)
             result["failed_fields"].append(field)

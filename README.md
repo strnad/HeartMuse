@@ -238,6 +238,11 @@ ollama serve
                          +------------------+     +------------------+
 ```
 
+## Requirements
+
+- **NVIDIA GPU with 16GB+ VRAM** (e.g., RTX 4080, RTX 3090, RTX 4090)
+- Support for 12GB GPUs is planned
+
 ## Memory Optimization
 
 For GPUs with limited VRAM:

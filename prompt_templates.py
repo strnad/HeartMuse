@@ -39,12 +39,16 @@ CRITICAL PRESERVATION RULES for existing lyrics:
 IMPORTANT: When writing or editing lyrics, convert any uppercase abbreviations to dotted form (e.g., "AI" -> "A.I.", "FBI" -> "F.B.I.", "IT" -> "I.T.", "USB" -> "U.S.B.") so they are pronounced letter by letter.""",
 
         "tags": """For tags, use comma-separated MUSIC PRODUCTION tags ONLY. Each tag is a single word or a short multi-word phrase. Use 5-15 tags total. Choose from these categories:
-- Genre/subgenre: pop, rock, jazz, classical, electronic, blues, country, funk, reggae, hip-hop, rap, indie, folk, soul, r&b, latin, dance, disco, techno, house, ambient, lo-fi, hard rock, progressive rock, dream pop, synth-pop, bossa nova
-- Mood/emotion: happy, sad, romantic, energetic, calm, peaceful, melancholic, upbeat, chill, dark, bright, dreamy, aggressive, gentle, intense, relaxing, cheerful, nostalgic, dramatic, playful
-- Instruments: piano, guitar, bass, drum, violin, saxophone, trumpet, flute, organ, synthesizer, acoustic guitar, electric guitar, cello, harp, strings, brass
-- Vocal type: male voice, female voice, choir, vocal harmony, rap, duet (MUST match the song description)
-- Tempo/style: fast, slow, medium tempo, groovy, driving, flowing, bouncy, acoustic, orchestral, cinematic, atmospheric, minimal, lo-fi, polished
-Do NOT include content/story/character/theme tags (e.g. no "love", "heartbreak", "summer" as tags). Focus strictly on how the music SOUNDS, not what it is about.""",
+- Genre/subgenre: pop, rock, jazz, classical, electronic, blues, country, funk, reggae, hip-hop, rap, indie, folk, soul, r&b, latin, dance, disco, techno, house, ambient, hard rock, progressive rock, dream pop, synth-pop, bossa nova, grunge, punk, new wave, shoegaze, trip-hop, dubstep, trap, boom bap, neo-soul, afrobeat, kpop, jpop
+- Mood/emotion: happy, sad, romantic, energetic, calm, peaceful, melancholic, upbeat, chill, dark, bright, dreamy, aggressive, gentle, intense, relaxing, cheerful, nostalgic, dramatic, playful, euphoric, haunting, bittersweet
+- Instruments: piano, guitar, bass, drum, violin, saxophone, trumpet, flute, organ, synthesizer, acoustic guitar, electric guitar, cello, harp, strings, brass, harmonica, banjo, mandolin, sitar, tabla, ukulele, accordion, turntable
+- Vocal style: male, female, child voice, deep voice, soft voice, whisper, falsetto, growl, breathy, choir, vocal harmony, rap vocal, duet (MUST match the song description)
+- Era/decade: 60s, 70s, 80s, 90s, 2000s, modern, retro, vintage
+- Production: lo-fi, hi-fi, raw, polished, distorted, clean, reverb, compressed
+- Scene/occasion: wedding, party, workout, meditation, study, driving, lullaby
+- Tempo/energy: fast, slow, medium tempo, groovy, driving, flowing, bouncy, acoustic, orchestral, cinematic, atmospheric, minimal
+Do NOT include content/story/character/theme tags (e.g. no "love", "heartbreak", "summer" as tags). Focus strictly on how the music SOUNDS, not what it is about.
+Format: lowercase,no spaces around commas,like this""",
     }
 
     # Tier 3: Field markers (format specifications)

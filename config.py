@@ -1,7 +1,11 @@
 import os
+import logging
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CKPT_DIR = os.environ.get("CKPT_DIR", os.path.join(BASE_DIR, "ckpt"))
@@ -10,18 +14,37 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(BASE_DIR, "output"))
 HEARTMULGEN_REPO = "HeartMuLa/HeartMuLaGen"
 HEARTMULGEN_FILES = ["tokenizer.json", "gen_config.json"]
 
-REQUIRED_MODELS = [
-    {
+# --- Model Variants ---
+# Each variant has its own HuggingFace repo and local directory.
+# The "version" string is passed to heartlib's from_pretrained() which constructs
+# the model path as: CKPT_DIR/HeartMuLa-oss-{version}/
+MODEL_VARIANTS = {
+    "rl": {
         "name": "HeartMuLa 3B RL",
         "repo_id": "HeartMuLa/HeartMuLa-RL-oss-3B-20260123",
+        "local_dir": "HeartMuLa-oss-3B-RL",
+        "version": "3B-RL",
+    },
+    "base": {
+        "name": "HeartMuLa 3B",
+        "repo_id": "HeartMuLa/HeartMuLa-oss-3B",
         "local_dir": "HeartMuLa-oss-3B",
+        "version": "3B",
     },
-    {
-        "name": "HeartCodec",
-        "repo_id": "HeartMuLa/HeartCodec-oss-20260123",
-        "local_dir": "HeartCodec-oss",
-    },
-]
+}
+
+CODEC_MODEL = {
+    "name": "HeartCodec",
+    "repo_id": "HeartMuLa/HeartCodec-oss-20260123",
+    "local_dir": "HeartCodec-oss",
+}
+
+MODEL_VARIANT_LABELS = {
+    "rl": "HeartMuLa 3B RL (Recommended)",
+    "base": "HeartMuLa 3B (Base)",
+}
+
+DEFAULT_MODEL_VARIANT = os.environ.get("MODEL_VARIANT", "rl")
 
 DEFAULT_GENERATION_PARAMS = {
     "temperature": float(os.environ.get("MUSIC_TEMPERATURE", "1.0")),
@@ -29,6 +52,8 @@ DEFAULT_GENERATION_PARAMS = {
     "topk": int(os.environ.get("MUSIC_TOPK", "50")),
     "max_audio_length_ms": int(os.environ.get("MUSIC_MAX_LENGTH_SEC", "240")) * 1000,
 }
+
+DEFAULT_LAZY_LOAD = os.environ.get("LAZY_LOAD", "true").lower() in ("1", "true", "yes")
 
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.7-flash")
