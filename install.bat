@@ -38,4 +38,6 @@ pip install -r requirements.txt
 echo.
 echo === Installation complete! ===
 echo Run run.bat to start the application.
+echo.
+echo Optional: Run install_audiosr.bat to enable AudioSR upscaling (48kHz super-resolution).
 pause

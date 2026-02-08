@@ -55,6 +55,16 @@ DEFAULT_GENERATION_PARAMS = {
 
 DEFAULT_LAZY_LOAD = os.environ.get("LAZY_LOAD", "true").lower() in ("1", "true", "yes")
 
+# --- AudioSR Upscaling ---
+DEFAULT_AUDIOSR_ENABLED = os.environ.get("AUDIOSR_ENABLED", "false").lower() in ("1", "true", "yes")
+DEFAULT_AUDIOSR_DDIM_STEPS = int(os.environ.get("AUDIOSR_DDIM_STEPS", "50"))
+DEFAULT_AUDIOSR_GUIDANCE_SCALE = float(os.environ.get("AUDIOSR_GUIDANCE_SCALE", "3.5"))
+DEFAULT_AUDIOSR_SEED = int(os.environ.get("AUDIOSR_SEED", "42"))
+DEFAULT_AUDIOSR_FORMAT = os.environ.get("AUDIOSR_FORMAT", "mp3").lower()
+AUDIOSR_FORMAT_CHOICES = ["FLAC (Lossless)", "WAV (Uncompressed)", "MP3"]
+AUDIOSR_FORMAT_MAP = {"FLAC (Lossless)": "flac", "WAV (Uncompressed)": "wav", "MP3": "mp3"}
+AUDIOSR_FORMAT_LABELS = {v: k for k, v in AUDIOSR_FORMAT_MAP.items()}
+
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.7-flash")
 

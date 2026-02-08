@@ -9,11 +9,19 @@ from config import (
     DEFAULT_OPENAI_MODELS, DEFAULT_LLM_BACKEND, DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT, OUTPUT_DIR,
     DEFAULT_LAZY_LOAD, DEFAULT_MODEL_VARIANT, MODEL_VARIANT_LABELS,
+    DEFAULT_AUDIOSR_ENABLED, DEFAULT_AUDIOSR_DDIM_STEPS,
+    DEFAULT_AUDIOSR_GUIDANCE_SCALE, DEFAULT_AUDIOSR_SEED,
+    DEFAULT_AUDIOSR_FORMAT, AUDIOSR_FORMAT_CHOICES, AUDIOSR_FORMAT_MAP,
+    AUDIOSR_FORMAT_LABELS,
 )
 from model_manager import is_ready_for_generation
 from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
 from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled
-from history import generate_output_path, save_generation, load_history, delete_generation
+from upscaler import upscale_audio, unload_audiosr, cancel_upscale, UpscaleCancelled
+from history import (
+    generate_output_path, save_generation, load_history, delete_generation,
+    update_generation, get_upscaled_files, next_upscale_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +151,9 @@ def on_generate_text(description, title, lyrics, tags,
 
 def on_generate_music_only(song_title, description, lyrics, tags,
                            temperature, cfg_scale, topk, max_length_sec,
-                           lazy_load, model_variant_label, autoplay):
+                           lazy_load, model_variant_label, autoplay,
+                           upscale_enabled, upscale_format_label,
+                           upscale_ddim_steps, upscale_guidance, upscale_seed):
     """Generate music only from current fields (no LLM)."""
     if not lyrics.strip():
         yield gr.skip(), _status_html("Please enter lyrics.", "error"), *_btns_enabled()
@@ -196,9 +206,59 @@ def on_generate_music_only(song_title, description, lyrics, tags,
             },
             audio_path=path,
         )
+        # Free HeartMuLa VRAM before upscaling when lazy_load is enabled
+        if lazy_load and upscale_enabled:
+            unload_pipeline()
+
+        # Auto-upscale if enabled
+        upscaled_path = None
+        upscale_error = None
+        if upscale_enabled:
+            yield gr.skip(), _status_html("Upscaling audio to 48kHz (this may take a while)...", "progress"), *_btns_disabled()
+            try:
+                fmt = AUDIOSR_FORMAT_MAP.get(upscale_format_label, "flac")
+                upscaled_stem = os.path.splitext(path)[0]
+                upscaled_path = f"{upscaled_stem}_48kHz.{fmt}"
+                upscale_audio(
+                    input_path=path,
+                    output_path=upscaled_path,
+                    seed=int(upscale_seed),
+                    ddim_steps=int(upscale_ddim_steps),
+                    guidance_scale=upscale_guidance,
+                    output_format=fmt,
+                )
+                update_generation(os.path.basename(path), {
+                    "upscaled_files": [{
+                        "file": os.path.basename(upscaled_path),
+                        "ddim_steps": int(upscale_ddim_steps),
+                        "guidance_scale": upscale_guidance,
+                        "seed": int(upscale_seed),
+                        "format": fmt,
+                    }],
+                })
+                if lazy_load:
+                    unload_audiosr()
+            except UpscaleCancelled:
+                yield gr.skip(), _status_html("Upscaling cancelled. Original audio saved.", "info"), *_btns_enabled()
+                return
+            except Exception as e:
+                logger.error("Upscaling failed: %s", e)
+                upscaled_path = None
+                upscale_error = str(e)
+
+        # Build audio output
         autoplay_attr = " autoplay" if autoplay else ""
-        audio_html = f'<audio controls{autoplay_attr} src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
-        yield audio_html, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
+        if upscaled_path and os.path.isfile(upscaled_path):
+            audio_html = f'<audio controls{autoplay_attr} src="/gradio_api/file={upscaled_path}" style="width:100%;margin:10px 0;"></audio>'
+            audio_html += f'<div style="font-size:0.8em;color:#888;margin-top:4px;">48kHz upscaled version. <a href="/gradio_api/file={path}" download style="color:#63b3ed;">Download original</a></div>'
+            status_msg = f"Music generated and upscaled to 48kHz."
+        else:
+            audio_html = f'<audio controls{autoplay_attr} src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
+            status_msg = f"Music saved as {os.path.basename(path)}"
+            if upscale_enabled and upscaled_path is None:
+                status_msg += f" (upscaling failed: {upscale_error})" if upscale_error else " (upscaling failed)"
+
+        yield audio_html, _status_html(status_msg, "success"), *_btns_enabled()
     except GenerationCancelled:
         yield gr.skip(), _status_html("Generation cancelled.", "info"), *_btns_enabled()
     except Exception as e:
@@ -238,6 +298,27 @@ def _build_card_html(e):
     if os.path.isfile(audio_path):
         audio_html = f'<audio controls src="/gradio_api/file={audio_path}" style="width:100%;margin:10px 0;"></audio>'
 
+    upscale_section = ""
+    for ui in get_upscaled_files(e):
+        fname = ui.get("file", "") if isinstance(ui, dict) else ui
+        if not fname:
+            continue
+        up_path = os.path.abspath(os.path.join(OUTPUT_DIR, fname))
+        if os.path.isfile(up_path):
+            badge_parts = ["48kHz"]
+            if isinstance(ui, dict):
+                if ui.get("format"):
+                    badge_parts.append(ui["format"].upper())
+                if ui.get("ddim_steps"):
+                    badge_parts.append(f"{ui['ddim_steps']} steps")
+            badge = html_mod.escape(" \u00b7 ".join(badge_parts))
+            upscale_section += f'''<div style="margin:6px 0;">
+  <span style="display:inline-block;background:#14532d;color:#22c55e;padding:2px 8px;border-radius:8px;font-size:0.75em;">{badge}</span>
+  <audio controls src="/gradio_api/file={up_path}" style="width:100%;margin:6px 0;"></audio>
+</div>'''
+        else:
+            upscale_section += '<div style="margin:6px 0;"><span style="display:inline-block;background:#7f1d1d;color:#ef4444;padding:2px 8px;border-radius:8px;font-size:0.75em;">Upscaled file missing</span></div>'
+
     tag_pills = ""
     if e.get("tags", ""):
         pills = [f'<span style="display:inline-block;background:#2d3748;color:#a0aec0;padding:2px 8px;border-radius:12px;font-size:0.75em;margin:2px;">{html_mod.escape(t.strip())}</span>'
@@ -261,6 +342,7 @@ def _build_card_html(e):
   {f'<p style="color:#aaa;font-size:0.85em;margin:4px 0;">{desc}</p>' if desc else ''}
   {tag_pills}
   {audio_html}
+  {upscale_section}
   {param_badges}
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;color:#7b8cde;font-size:0.85em;">Show full details</summary>
@@ -278,12 +360,25 @@ def _build_playlist_html(entries):
     tracks = []
     for e in entries:
         audio_file = e.get("audio_file", "")
-        audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
-        if os.path.isfile(audio_path):
+        upscaled_items = get_upscaled_files(e)
+
+        # Prefer latest upscaled version for playlist playback
+        preferred_path = None
+        if upscaled_items:
+            latest = upscaled_items[-1]
+            fname = latest.get("file", "") if isinstance(latest, dict) else latest
+            if fname:
+                up_path = os.path.abspath(os.path.join(OUTPUT_DIR, fname))
+                if os.path.isfile(up_path):
+                    preferred_path = up_path
+        if preferred_path is None:
+            preferred_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+
+        if os.path.isfile(preferred_path):
             tracks.append({
                 "title": e.get("song_title", "Untitled"),
                 "ts": e.get("timestamp", "")[:16].replace("T", " "),
-                "src": f"/gradio_api/file={audio_path}",
+                "src": f"/gradio_api/file={preferred_path}",
             })
     if not tracks:
         return ""
@@ -611,6 +706,35 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
 
         autoplay_cb = gr.Checkbox(label="Autoplay", value=True)
+
+        # AudioSR Upscaling
+        with gr.Accordion("AudioSR Upscaling", open=False):
+            upscale_cb = gr.Checkbox(
+                value=DEFAULT_AUDIOSR_ENABLED,
+                label="Auto-upscale to 48kHz after generation",
+                info="Uses AudioSR to upscale audio quality. Adds processing time. Requires ~1-2GB additional VRAM.",
+            )
+            upscale_format = gr.Dropdown(
+                choices=AUDIOSR_FORMAT_CHOICES,
+                value=AUDIOSR_FORMAT_LABELS.get(DEFAULT_AUDIOSR_FORMAT, "FLAC (Lossless)"),
+                label="Output Format",
+            )
+            upscale_ddim = gr.Slider(
+                10, 500, value=DEFAULT_AUDIOSR_DDIM_STEPS, step=10,
+                label="DDIM Steps",
+                info="Higher = better quality but slower (50 recommended)",
+            )
+            upscale_guidance = gr.Slider(
+                1.0, 20.0, value=DEFAULT_AUDIOSR_GUIDANCE_SCALE, step=0.5,
+                label="Guidance Scale",
+                info="Classifier-free guidance strength (3.5 default)",
+            )
+            upscale_seed = gr.Number(
+                value=DEFAULT_AUDIOSR_SEED,
+                label="Seed",
+                precision=0,
+            )
+
         with gr.Row():
             gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
             cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
@@ -636,6 +760,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             with gr.Row():
                 unload_ollama_btn = gr.Button("Unload Ollama Model", size="sm")
                 unload_btn = gr.Button("Unload Music Pipeline", size="sm")
+                unload_audiosr_btn = gr.Button("Unload AudioSR", size="sm")
             ollama_status = gr.Textbox(label="Status", interactive=False, visible=False)
 
         def on_unload_ollama(backend, o_url, o_model):
@@ -650,7 +775,8 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             openai_url, openai_model, openai_key,
             llm_temp, llm_timeout, ollama_auto_unload,
         ]
-        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb]
+        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb,
+                        upscale_cb, upscale_format, upscale_ddim, upscale_guidance, upscale_seed]
 
         all_btns = [gen_text_btn, gen_music_btn, cancel_btn]
 
@@ -669,9 +795,14 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             [audio_out, status_box] + all_btns,
         )
 
+        def on_unload_audiosr():
+            unload_audiosr()
+            return _status_html("AudioSR model unloaded, GPU memory freed.", "success")
+
         unload_ollama_btn.click(on_unload_ollama, [llm_backend, ollama_url, ollama_model], [ollama_status])
         unload_btn.click(on_unload, [], [status_box])
-        cancel_btn.click(lambda: cancel_generation(), [], [])
+        unload_audiosr_btn.click(on_unload_audiosr, [], [status_box])
+        cancel_btn.click(lambda: (cancel_generation(), cancel_upscale()), [], [])
 
         # Clear button
         clear_btn.click(on_clear_all, [gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb, song_desc, song_title_box, lyrics_box, tags_box], [song_desc, song_title_box, lyrics_box, tags_box, status_box])
@@ -686,6 +817,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         _card_htmls = []
         _card_states = []
         _load_btns = []
+        _upscale_btns = []
         _delete_btns = []
         for _i in range(HISTORY_PAGE_SIZE):
             _st = gr.State(value=None)
@@ -693,9 +825,11 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             _html = gr.HTML(visible=False)
             with gr.Row(visible=False) as _row:
                 _lb = gr.Button("Load to Generator", size="sm", variant="primary", scale=1)
+                _ub = gr.Button("Load to AudioSR", size="sm", variant="secondary", scale=1)
                 _db = gr.Button("Delete", size="sm", variant="stop", scale=1)
             _card_htmls.append((_html, _row))
             _load_btns.append(_lb)
+            _upscale_btns.append(_ub)
             _delete_btns.append(_db)
 
         with gr.Row():
@@ -774,6 +908,20 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             delete_generation(state.get("audio_file", ""))
             return page, _status_html(f"Deleted '{state.get('song_title', 'Untitled')}'.", "success")
 
+        # Wire up upscale handlers (loads song into AudioSR tab)
+        def _slot_upscale(state):
+            if not state:
+                return gr.skip(), gr.skip(), _status_html("No entry selected.", "error")
+            audio_file = state.get("audio_file", "")
+            if not audio_file:
+                return gr.skip(), gr.skip(), _status_html("No audio file found.", "error")
+            audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+            if not os.path.isfile(audio_path):
+                return gr.skip(), gr.skip(), _status_html("Audio file not found.", "error")
+            return audio_path, audio_file, _status_html(
+                f"Loaded '{state.get('song_title', 'Untitled')}' into AudioSR tab.", "success"
+            )
+
         _JS_SWITCH_TO_GENERATE = "()" + \
             " => document.querySelector('button[role=\"tab\"]').click()"
 
@@ -783,6 +931,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 [_card_states[_i]],
                 [song_desc, song_title_box, lyrics_box, tags_box, history_status],
             ).then(fn=None, js=_JS_SWITCH_TO_GENERATE)
+            # Upscale buttons are wired after the AudioSR tab is defined (below)
             _delete_btns[_i].click(
                 _slot_delete,
                 [_card_states[_i], history_page],
@@ -808,6 +957,113 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
         # Refresh when switching to this tab
         history_tab.select(_refresh_history, [history_page], _refresh_outputs)
+
+    with gr.Tab("AudioSR Upscale"):
+        gr.Markdown("### Upscale Audio to 48kHz")
+        gr.Markdown("Upload any audio file and upscale it to 48kHz using AudioSR super-resolution.")
+
+        upscale_source = gr.State(value=None)  # audio_file basename when loaded from History
+        upload_audio = gr.Audio(label="Input Audio", type="filepath")
+
+        with gr.Accordion("Upscale Settings", open=True):
+            up_format = gr.Dropdown(
+                choices=AUDIOSR_FORMAT_CHOICES,
+                value=AUDIOSR_FORMAT_LABELS.get(DEFAULT_AUDIOSR_FORMAT, "FLAC (Lossless)"),
+                label="Output Format",
+            )
+            up_ddim = gr.Slider(
+                10, 500, value=DEFAULT_AUDIOSR_DDIM_STEPS, step=10,
+                label="DDIM Steps",
+                info="Higher = better quality but slower (50 recommended)",
+            )
+            up_guidance = gr.Slider(
+                1.0, 20.0, value=DEFAULT_AUDIOSR_GUIDANCE_SCALE, step=0.5,
+                label="Guidance Scale",
+            )
+            up_seed = gr.Number(value=DEFAULT_AUDIOSR_SEED, label="Seed", precision=0)
+
+        with gr.Row():
+            up_btn = gr.Button("Upscale", variant="primary", size="lg")
+            up_cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
+
+        up_status = gr.HTML(value="")
+        up_output = gr.Audio(label="Upscaled Audio (48kHz)", type="filepath", interactive=False)
+
+        def on_standalone_upscale(audio_path, format_label, ddim_steps, guidance_scale, seed, source_file):
+            if not audio_path:
+                yield gr.skip(), _status_html("Please upload an audio file.", "error"), gr.update(interactive=True), gr.update(interactive=False), gr.skip()
+                return
+
+            # Verify source_file still matches the audio being upscaled
+            if source_file:
+                expected = os.path.abspath(os.path.join(OUTPUT_DIR, source_file))
+                if os.path.abspath(audio_path) != expected:
+                    source_file = None
+
+            yield gr.skip(), _status_html("Upscaling audio to 48kHz...", "progress"), gr.update(interactive=False), gr.update(interactive=True), gr.skip()
+            try:
+                fmt = AUDIOSR_FORMAT_MAP.get(format_label, "flac")
+
+                if source_file:
+                    output_path = next_upscale_path(source_file, fmt)
+                else:
+                    os.makedirs(OUTPUT_DIR, exist_ok=True)
+                    stem = os.path.splitext(os.path.basename(audio_path))[0]
+                    output_path = os.path.join(OUTPUT_DIR, f"upscaled_{stem}_48kHz.{fmt}")
+
+                result_path = upscale_audio(
+                    input_path=audio_path,
+                    output_path=output_path,
+                    seed=int(seed),
+                    ddim_steps=int(ddim_steps),
+                    guidance_scale=guidance_scale,
+                    output_format=fmt,
+                )
+
+                # Update history metadata if linked to a song
+                if source_file:
+                    json_path = os.path.splitext(os.path.join(OUTPUT_DIR, source_file))[0] + ".json"
+                    existing = []
+                    if os.path.isfile(json_path):
+                        try:
+                            with open(json_path, "r", encoding="utf-8") as f:
+                                meta = json.load(f)
+                            existing = get_upscaled_files(meta)
+                        except (json.JSONDecodeError, OSError):
+                            pass
+                    new_entry = {
+                        "file": os.path.basename(result_path),
+                        "ddim_steps": int(ddim_steps),
+                        "guidance_scale": guidance_scale,
+                        "seed": int(seed),
+                        "format": fmt,
+                    }
+                    update_generation(source_file, {"upscaled_files": existing + [new_entry]})
+
+                yield result_path, _status_html("Upscaling complete! 48kHz audio ready.", "success"), gr.update(interactive=True), gr.update(interactive=False), None
+            except UpscaleCancelled:
+                yield gr.skip(), _status_html("Upscaling cancelled.", "info"), gr.update(interactive=True), gr.update(interactive=False), gr.skip()
+            except Exception as e:
+                logger.error("Standalone upscaling failed: %s", e)
+                yield gr.skip(), _status_html(f"Error: {e}", "error"), gr.update(interactive=True), gr.update(interactive=False), gr.skip()
+
+        up_btn.click(
+            on_standalone_upscale,
+            [upload_audio, up_format, up_ddim, up_guidance, up_seed, upscale_source],
+            [up_output, up_status, up_btn, up_cancel_btn, upscale_source],
+        )
+        up_cancel_btn.click(lambda: cancel_upscale(), [], [])
+
+    # Wire up History upscale buttons (needs upload_audio + upscale_source from AudioSR tab)
+    _JS_SWITCH_TO_AUDIOSR = \
+        "() => document.querySelectorAll('button[role=\"tab\"]')[2].click()"
+
+    for _i in range(HISTORY_PAGE_SIZE):
+        _upscale_btns[_i].click(
+            _slot_upscale,
+            [_card_states[_i]],
+            [upload_audio, upscale_source, history_status],
+        ).then(fn=None, js=_JS_SWITCH_TO_AUDIOSR)
 
 
 if __name__ == "__main__":

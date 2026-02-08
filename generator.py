@@ -57,6 +57,13 @@ def get_pipeline(lazy_load=False, model_variant=None):
         if _pipeline is not None:
             return _pipeline
 
+        # Unload AudioSR to free GPU memory before loading HeartMuLa
+        try:
+            from upscaler import unload_audiosr
+            unload_audiosr()
+        except ImportError:
+            pass
+
         version = variant["version"]
 
         logger.info("Initializing HeartMuLa pipeline (variant=%s, version=%s, lazy_load=%s)",

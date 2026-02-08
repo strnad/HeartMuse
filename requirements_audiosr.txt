@@ -1,0 +1,11 @@
+# AudioSR sub-dependencies (audiosr itself installed via --no-deps to avoid version conflicts)
+scipy
+librosa
+progressbar
+ftfy
+timm
+chardet
+torchlibrosa
+unidecode
+phonemizer
+matplotlib

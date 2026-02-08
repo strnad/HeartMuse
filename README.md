@@ -172,6 +172,43 @@ Round 3: Generate music with your curated combination
 
 ---
 
+### AudioSR Upscaling (Optional)
+
+HeartMuse optionally supports **AudioSR** super-resolution to upscale generated music to **48kHz**. This feature is available in three places:
+
+- **Auto-upscale** after music generation (checkbox in Generate tab)
+- **Standalone upscale tab** for uploading and upscaling any audio file
+- **Per-song upscale** button in History tab
+
+AudioSR requires a separate installation:
+
+```bash
+./install_audiosr.sh      # Linux/macOS
+# or: install_audiosr.bat   # Windows
+```
+
+If AudioSR is not installed, the app works normally - upscale features will prompt you to install it when used.
+
+### Model Variants
+
+HeartMuse supports two HeartMuLa model variants:
+
+| Variant | Description |
+|---------|-------------|
+| **RL (Recommended)** | Better style and tag control, produces more coherent results |
+| **Base** | Original model, good for comparison |
+
+Switch between variants in the Memory Management section. Models download automatically on first use.
+
+### History & Playlist
+
+All generated songs are saved with metadata and available in the **History tab**:
+- Browse, play, and manage past generations
+- **Playlist player** with sequential/shuffle playback
+- **Load** any song back to the Generator for re-use
+- **Upscale** individual songs to 48kHz (requires AudioSR)
+- **Delete** songs you no longer need
+
 ### 100% Local & Private
 
 - **Ollama backend** - everything runs on your computer, no data leaves your machine
@@ -211,6 +248,15 @@ OLLAMA_MODEL=glm-4.7-flash
 
 # Music generation parameters
 MUSIC_MAX_LENGTH_SEC=120
+
+# Model variant: rl (recommended) or base
+MODEL_VARIANT=rl
+
+# AudioSR upscaling (requires separate install)
+# AUDIOSR_ENABLED=false
+# AUDIOSR_FORMAT=mp3          # mp3, flac, or wav
+# AUDIOSR_DDIM_STEPS=50
+# AUDIOSR_GUIDANCE_SCALE=3.5
 ```
 
 ### Setting Up Ollama (Recommended)
@@ -247,17 +293,21 @@ ollama serve
 
 For GPUs with limited VRAM:
 
-- **Lazy loading** (default) - reduces VRAM footprint
-- **"Unload Model" button** - frees memory between generations
+- **Lazy loading** (default) - loads models on demand and frees VRAM between generation stages
+- **"Unload Model" button** - frees GPU memory between generations
+- **GPU mutual exclusion** - HeartMuLa and AudioSR automatically unload each other to share VRAM
 - **Shorter song length** - reduce `MUSIC_MAX_LENGTH_SEC`
+- **Cancel generation** - stop in-progress generation or upscaling to free resources
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| "Out of memory" | Reduce song length, use "Unload Model" |
+| "Out of memory" | Reduce song length, use "Unload Model", enable lazy loading |
 | Ollama not connecting | Verify `ollama serve` is running |
 | Models not downloading | Check internet connection |
+| AudioSR not working | Run `./install_audiosr.sh` to install it separately |
+| AudioSR build fails | Ensure `git` is installed and you have a C compiler (gcc/MSVC) |
 
 ## Acknowledgments
 

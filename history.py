@@ -48,6 +48,43 @@ def save_generation(song_title, description, lyrics, tags, params, audio_path):
     return json_path
 
 
+def update_generation(audio_file, updates):
+    """Update fields in a generation's JSON metadata.
+
+    Args:
+        audio_file: The audio filename (basename) to identify the generation.
+        updates: Dict of fields to update/add to the metadata.
+    Returns:
+        True on success, False on failure.
+    """
+    if not audio_file:
+        return False
+    audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
+    if not audio_path.startswith(os.path.realpath(OUTPUT_DIR) + os.sep):
+        logger.warning("Path traversal attempt blocked: %s", audio_file)
+        return False
+    json_path = os.path.splitext(audio_path)[0] + ".json"
+    if not os.path.isfile(json_path):
+        return False
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        meta.update(updates)
+        fd, tmp = tempfile.mkstemp(dir=OUTPUT_DIR, suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, json_path)
+        except Exception:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        return True
+    except Exception:
+        logger.error("Failed to update metadata for %s", audio_file)
+        return False
+
+
 def load_history():
     """Load all generation metadata, sorted newest first."""
     if not os.path.isdir(OUTPUT_DIR):
@@ -65,8 +102,49 @@ def load_history():
     return entries
 
 
+def get_upscaled_files(entry):
+    """Return a normalized list of upscaled file entries from a history entry.
+
+    Handles both old format (single ``upscaled_file``) and new format
+    (``upscaled_files`` list).  Each item is a dict with at least a ``file`` key.
+    """
+    # New format
+    items = entry.get("upscaled_files")
+    if isinstance(items, list) and items:
+        return items
+
+    # Old format – single file
+    old = entry.get("upscaled_file")
+    if old:
+        params = entry.get("upscale_params") or {}
+        return [{"file": old, **params}]
+
+    return []
+
+
+def next_upscale_path(audio_file, fmt):
+    """Return the next available upscaled filename for *audio_file*.
+
+    Naming scheme:
+      1st  → {stem}_48kHz.{fmt}
+      2nd  → {stem}_48kHz_2.{fmt}
+      3rd  → {stem}_48kHz_3.{fmt}  …
+    """
+    stem = os.path.splitext(audio_file)[0]
+    ext = f".{fmt}"
+    candidate = os.path.join(OUTPUT_DIR, f"{stem}_48kHz{ext}")
+    if not os.path.exists(candidate):
+        return candidate
+    n = 2
+    while True:
+        candidate = os.path.join(OUTPUT_DIR, f"{stem}_48kHz_{n}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+
 def delete_generation(audio_file):
-    """Delete a generation's audio and metadata files. Returns True on success."""
+    """Delete a generation's audio, metadata, and upscaled files. Returns True on success."""
     if not audio_file:
         return False
     audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
@@ -75,8 +153,24 @@ def delete_generation(audio_file):
         logger.warning("Path traversal attempt blocked: %s", audio_file)
         return False
     json_path = os.path.splitext(audio_path)[0] + ".json"
+
+    # Collect all upscaled file paths from metadata
+    upscaled_paths = []
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            for item in get_upscaled_files(meta):
+                fname = item.get("file") if isinstance(item, dict) else item
+                if fname:
+                    up = os.path.realpath(os.path.join(OUTPUT_DIR, fname))
+                    if up.startswith(os.path.realpath(OUTPUT_DIR) + os.sep):
+                        upscaled_paths.append(up)
+        except (json.JSONDecodeError, OSError):
+            pass
+
     deleted = False
-    for p in (audio_path, json_path):
+    for p in [audio_path, json_path] + upscaled_paths:
         if os.path.isfile(p):
             os.unlink(p)
             deleted = True
