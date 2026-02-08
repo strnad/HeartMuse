@@ -142,7 +142,7 @@ def on_generate_text(description, title, lyrics, tags,
 
 def on_generate_music_only(song_title, description, lyrics, tags,
                            temperature, cfg_scale, topk, max_length_sec,
-                           lazy_load, model_variant_label):
+                           lazy_load, model_variant_label, autoplay):
     """Generate music only from current fields (no LLM)."""
     if not lyrics.strip():
         yield gr.skip(), _status_html("Please enter lyrics.", "error"), *_btns_enabled()
@@ -195,7 +195,8 @@ def on_generate_music_only(song_title, description, lyrics, tags,
             },
             audio_path=path,
         )
-        audio_html = f'<audio controls src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
+        autoplay_attr = " autoplay" if autoplay else ""
+        audio_html = f'<audio controls{autoplay_attr} src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
         yield audio_html, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
     except GenerationCancelled:
         yield gr.skip(), _status_html("Generation cancelled.", "info"), *_btns_enabled()
@@ -367,6 +368,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             topk = gr.Slider(1, 200, value=DEFAULT_GENERATION_PARAMS["topk"], step=1, label="Top-K")
             max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
 
+        autoplay_cb = gr.Checkbox(label="Autoplay", value=True)
         with gr.Row():
             gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
             cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
@@ -406,7 +408,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             openai_url, openai_model, openai_key,
             llm_temp, llm_timeout, ollama_auto_unload,
         ]
-        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant]
+        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb]
 
         all_btns = [gen_text_btn, gen_music_btn, cancel_btn]
 
