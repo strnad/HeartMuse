@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 import html as html_mod
 import gradio as gr
 from config import (
@@ -9,7 +10,7 @@ from config import (
     DEFAULT_OPENAI_MODELS, DEFAULT_LLM_BACKEND, DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT, OUTPUT_DIR,
     DEFAULT_LAZY_LOAD, DEFAULT_MODEL_VARIANT, MODEL_VARIANT_LABELS,
-    DEFAULT_NUM_VARIANTS,
+    DEFAULT_NUM_VARIANTS, STYLE_TRANSFER_ENABLED, TRANSCRIPTION_ENABLED,
 )
 from model_manager import is_ready_for_generation
 from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
@@ -19,6 +20,7 @@ from history import generate_output_path, save_generation, load_history, delete_
 logger = logging.getLogger(__name__)
 
 HISTORY_PAGE_SIZE = 10
+_JS_SWITCH_TO_GENERATE = "() => document.querySelector('button[role=\"tab\"]').click()"
 
 # Map display labels to internal variant names
 _VARIANT_CHOICES = list(MODEL_VARIANT_LABELS.values())
@@ -64,8 +66,8 @@ def _btns_enabled():
     return gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)
 
 
-def _status_html(message, style="info"):
-    """Return styled HTML for status messages with optional progress bar."""
+def _status_html(message, style="info", stats_html=""):
+    """Return styled HTML for status messages with optional progress bar and stats."""
     message = html_mod.escape(str(message))
     colors = {
         "info": ("#1a3a5c", "#3b82f6", "#e0f2fe"),
@@ -90,7 +92,7 @@ def _status_html(message, style="info"):
         </style>"""
 
     return f"""<div style="padding:12px 16px;border-left:4px solid {border};background:{bg};border-radius:8px;font-size:1.05em;color:#e2e8f0;">
-  {message}{progress_bar}
+  {message}{progress_bar}{stats_html}
 </div>"""
 
 
@@ -122,6 +124,148 @@ def _build_variants_html(variants, autoplay=False):
     return f'<div>{"".join(parts)}</div>'
 
 
+def _get_ram_usage_mb():
+    """Return (used_mb, total_mb) for system RAM, or None if unavailable.
+
+    Supports Linux (/proc/meminfo) and Windows (kernel32.GlobalMemoryStatusEx).
+    """
+    # Linux
+    try:
+        with open("/proc/meminfo") as f:
+            info = {}
+            for line in f:
+                tokens = line.split()
+                if len(tokens) >= 2 and tokens[0].rstrip(":") in ("MemTotal", "MemAvailable"):
+                    info[tokens[0].rstrip(":")] = int(tokens[1])  # kB
+            if "MemTotal" in info and "MemAvailable" in info:
+                total = info["MemTotal"] / 1024
+                used = (info["MemTotal"] - info["MemAvailable"]) / 1024
+                return used, total
+    except (OSError, ValueError):
+        pass
+    # Windows
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX(dwLength=ctypes.sizeof(MEMORYSTATUSEX))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            total = stat.ullTotalPhys / (1024 ** 2)
+            used = (stat.ullTotalPhys - stat.ullAvailPhys) / (1024 ** 2)
+            return used, total
+    except (OSError, AttributeError):
+        pass
+    return None
+
+
+def _read_memory_stats():
+    """Collect current VRAM and RAM usage. Returns dict with available fields."""
+    stats = {}
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(device)
+            stats["gpu_name"] = props.name
+            stats["gpu_total_mb"] = props.total_memory / (1024 ** 2)
+            stats["gpu_allocated_mb"] = torch.cuda.memory_allocated(device) / (1024 ** 2)
+            stats["gpu_peak_mb"] = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+    except Exception:
+        pass
+    ram = _get_ram_usage_mb()
+    if ram:
+        stats["ram_used_mb"], stats["ram_total_mb"] = ram
+    return stats
+
+
+def _get_gpu_utilization():
+    """Return GPU utilization percentage via nvidia-smi, or None."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split("\n")[0])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _get_live_memory_html():
+    """Return compact HTML bar showing current GPU, VRAM and RAM usage."""
+    parts = []
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            used_mb = (total - free) / (1024 ** 2)
+            total_mb = total / (1024 ** 2)
+            pct = used_mb / total_mb * 100 if total_mb else 0
+            gpu_util = _get_gpu_utilization()
+            gpu_str = f"GPU: {gpu_util}%  |  " if gpu_util is not None else ""
+            parts.append(f"{gpu_str}VRAM: {used_mb:,.0f} / {total_mb:,.0f} MB ({pct:.0f}%)")
+    except Exception:
+        pass
+    ram = _get_ram_usage_mb()
+    if ram:
+        used_mb, total_mb = ram
+        pct = used_mb / total_mb * 100 if total_mb else 0
+        parts.append(f"RAM: {used_mb:,.0f} / {total_mb:,.0f} MB ({pct:.0f}%)")
+    if not parts:
+        return ""
+    text = html_mod.escape("  |  ".join(parts))
+    return (
+        f'<div style="padding:6px 12px;background:#0f172a;border:1px solid #1e293b;'
+        f'border-radius:6px;font-family:monospace;font-size:0.82em;color:#64748b;'
+        f'text-align:center;">{text}</div>'
+    )
+
+
+def _format_stats_html(timings=None, mem_stats=None, extra_info=None):
+    """Format generation statistics as a collapsible HTML details block."""
+    rows = []
+    if timings:
+        rows.append("<b>Timing</b>")
+        for label, seconds in timings:
+            rows.append(f"  {html_mod.escape(label)}: {seconds:.1f}s")
+    if mem_stats:
+        rows.append("<b>Memory</b>")
+        if "gpu_name" in mem_stats:
+            rows.append(f"  GPU: {html_mod.escape(mem_stats['gpu_name'])}")
+        if "gpu_peak_mb" in mem_stats:
+            peak = mem_stats["gpu_peak_mb"]
+            total = mem_stats.get("gpu_total_mb", 0)
+            rows.append(f"  VRAM Peak: {peak:,.0f} / {total:,.0f} MB")
+    if extra_info:
+        rows.append("<b>Details</b>")
+        for label, value in extra_info:
+            rows.append(f"  {html_mod.escape(label)}: {html_mod.escape(str(value))}")
+    if not rows:
+        return ""
+    content = "\n".join(rows)
+    return (
+        f'<details style="margin-top:10px;font-size:0.85em;">'
+        f'<summary style="cursor:pointer;color:#7b8cde;">Generation Statistics</summary>'
+        f'<pre style="margin-top:6px;padding:8px;background:rgba(0,0,0,0.2);'
+        f'border-radius:6px;white-space:pre-wrap;color:#a0aec0;">{content}</pre>'
+        f'</details>'
+    )
+
+
 def on_generate_text(description, title, lyrics, tags,
                      gen_desc, gen_title, gen_lyrics, gen_tags,
                      backend, ollama_url, ollama_model,
@@ -137,6 +281,7 @@ def on_generate_text(description, title, lyrics, tags,
     try:
         kwargs = _llm_kwargs(backend, ollama_url, ollama_model, openai_url, openai_model, openai_key, llm_temp, llm_timeout)
 
+        t_start = time.monotonic()
         result = generate_checked_fields(
             description=description,
             title=title,
@@ -150,6 +295,7 @@ def on_generate_text(description, title, lyrics, tags,
             max_length_sec=max_length_sec,
             **kwargs,
         )
+        t_text = time.monotonic() - t_start
         _maybe_unload_ollama(backend, ollama_url, ollama_model, auto_unload)
 
         # Build status message reporting what actually succeeded vs failed
@@ -157,12 +303,16 @@ def on_generate_text(description, title, lyrics, tags,
         failed = result.get("failed_fields", [])
         succeeded = [f for f in requested if f not in failed]
 
+        stats = _format_stats_html(
+            timings=[("Text generation", t_text)],
+            extra_info=[("Backend", backend), ("Model", ollama_model if backend == "Ollama" else openai_model)],
+        )
         if failed and succeeded:
-            status = _status_html(f"Generated: {', '.join(succeeded)}. Failed to parse: {', '.join(failed)}", "info")
+            status = _status_html(f"Generated: {', '.join(succeeded)}. Failed to parse: {', '.join(failed)}", "info", stats_html=stats)
         elif failed and not succeeded:
-            status = _status_html(f"LLM did not return expected format for: {', '.join(failed)}", "error")
+            status = _status_html(f"LLM did not return expected format for: {', '.join(failed)}", "error", stats_html=stats)
         else:
-            status = _status_html(f"Generated: {', '.join(succeeded)}", "success")
+            status = _status_html(f"Generated: {', '.join(succeeded)}", "success", stats_html=stats)
 
         yield result["description"], result["title"], result["lyrics"], result["tags"], status, *_btns_enabled()
     except Exception as e:
@@ -172,17 +322,24 @@ def on_generate_text(description, title, lyrics, tags,
 
 def on_generate_music_only(song_title, description, lyrics, tags,
                            temperature, cfg_scale, topk, max_length_sec,
-                           lazy_load, model_variant_label, autoplay, num_variants):
+                           lazy_load, model_variant_label, autoplay, num_variants,
+                           style_audio, style_enabled, style_strength, seed):
     """Generate music only from current fields (no LLM). Supports batch variants."""
     if not lyrics.strip():
         yield gr.skip(), _status_html("Please enter lyrics.", "error"), *_btns_enabled()
         return
-    if not tags.strip():
-        yield gr.skip(), _status_html("Please enter tags.", "error"), *_btns_enabled()
+    if not tags.strip() and not (style_enabled and style_audio):
+        yield gr.skip(), _status_html("Please enter tags or provide a style reference audio.", "error"), *_btns_enabled()
         return
 
     num_variants = int(num_variants)
     variant_name = _variant_name_from_label(model_variant_label)
+    seed_val = None if seed is None or seed < 0 else int(seed)
+
+    style_embedding = None
+    t_total_start = time.monotonic()
+    t_style = None
+    variant_timings = []
 
     yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
 
@@ -196,8 +353,31 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 yield gr.skip(), _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
                 return
 
+        # Extract style embedding from reference audio if enabled
+        if style_enabled and style_audio:
+            yield gr.skip(), _status_html("Extracting style from reference audio...", "progress"), *_btns_disabled()
+            try:
+                from style_transfer import extract_style_embedding
+                t_style_start = time.monotonic()
+                style_embedding = extract_style_embedding(style_audio)
+                t_style = time.monotonic() - t_style_start
+                if style_strength != 1.0:
+                    style_embedding = style_embedding * style_strength
+            except Exception as e:
+                logger.error("Style extraction failed: %s", e)
+                yield gr.skip(), _status_html(f"Style extraction failed: {e}", "error"), *_btns_enabled()
+                return
+
         title = song_title.strip() or "Untitled"
         completed = []  # list of (abs_path, filename) tuples
+
+        # Reset peak memory tracking before generation loop
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
 
         for i in range(num_variants):
             # Check cancellation between variants
@@ -211,11 +391,13 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 status_msg = f"Generating variant {i + 1} of {num_variants}..."
             else:
                 status_msg = "Generating music (this may take a while)..."
-            yield _build_variants_html(completed, autoplay=False), \
-                  _status_html(status_msg, "progress"), *_btns_disabled()
+            audio_update = _build_variants_html(completed, autoplay=False) if completed else gr.skip()
+            yield audio_update, _status_html(status_msg, "progress"), *_btns_disabled()
 
             output_path = generate_output_path(title)
-            path = generate_music(
+            variant_seed = (seed_val + i) if seed_val is not None else None
+            t_var_start = time.monotonic()
+            path, used_seed = generate_music(
                 lyrics=lyrics,
                 tags=tags,
                 temperature=temperature,
@@ -225,7 +407,10 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 output_path=output_path,
                 lazy_load=lazy_load,
                 model_variant=variant_name,
+                style_embedding=style_embedding,
+                seed=variant_seed,
             )
+            variant_timings.append(time.monotonic() - t_var_start)
 
             params = {
                 "temperature": temperature,
@@ -234,6 +419,9 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 "max_length_sec": max_length_sec,
                 "lazy_load": lazy_load,
                 "model_variant": variant_name,
+                "style_reference": bool(style_embedding is not None),
+                "style_strength": style_strength if style_embedding is not None else None,
+                "seed": used_seed,
             }
             if num_variants > 1:
                 params["batch_total"] = num_variants
@@ -250,12 +438,32 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 
             is_last = i == num_variants - 1
             if is_last:
+                t_total = time.monotonic() - t_total_start
+
+                # Build stats
+                timings = []
+                if t_style is not None:
+                    timings.append(("Style extraction", t_style))
+                for vi, vt in enumerate(variant_timings):
+                    label = f"Music generation (variant {vi + 1})" if num_variants > 1 else "Music generation"
+                    timings.append((label, vt))
+                timings.append(("Total", t_total))
+
+                mem_stats = _read_memory_stats()
+                try:
+                    import torch
+                    device_str = "CUDA" if torch.cuda.is_available() else "CPU"
+                except Exception:
+                    device_str = "CPU"
+                extra = [("Model", variant_name), ("Device", device_str), ("Seed", str(used_seed))]
+                stats = _format_stats_html(timings=timings, mem_stats=mem_stats, extra_info=extra)
+
                 if num_variants > 1:
                     msg = f"All {num_variants} variants generated."
                 else:
                     msg = f"Music saved as {os.path.basename(path)}"
                 yield _build_variants_html(completed, autoplay), \
-                      _status_html(msg, "success"), *_btns_enabled()
+                      _status_html(msg, "success", stats_html=stats), *_btns_enabled()
             else:
                 yield _build_variants_html(completed, autoplay=False), \
                       _status_html(f"Variant {i + 1} of {num_variants} complete.", "info"), \
@@ -277,6 +485,10 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                   *_btns_enabled()
         else:
             yield gr.skip(), _status_html(f"Error: {e}", "error"), *_btns_enabled()
+    finally:
+        if style_embedding is not None:
+            from style_transfer import unload_muq
+            unload_muq()
 
 
 def on_unload():
@@ -295,10 +507,53 @@ def on_clear_all(gen_desc, gen_title, gen_lyrics, gen_tags, desc, title, lyrics,
     return new_desc, new_title, new_lyrics, new_tags, _status_html(msg, "info")
 
 
+def on_transcribe(audio_path, auto_unload):
+    """Transcribe lyrics from uploaded audio file."""
+    if not audio_path:
+        yield "", _status_html("Please upload an audio file.", "error"), gr.update(interactive=True)
+        return
+
+    yield "", _status_html("Checking transcriptor model...", "progress"), gr.update(interactive=False)
+
+    from model_manager import is_transcriptor_downloaded, download_transcriptor
+    if not is_transcriptor_downloaded():
+        yield "", _status_html("Downloading HeartTranscriptor model (first time only, this may take a while)...", "progress"), gr.update(interactive=False)
+        download_transcriptor()
+        if not is_transcriptor_downloaded():
+            yield "", _status_html("Failed to download transcriptor model. Check internet connection.", "error"), gr.update(interactive=True)
+            return
+
+    yield "", _status_html("Transcribing lyrics (this may take a moment)...", "progress"), gr.update(interactive=False)
+
+    try:
+        from transcriptor import transcribe_audio
+        text = transcribe_audio(audio_path)
+        if not text or not text.strip():
+            yield "", _status_html("Transcription completed but no lyrics were detected.", "info"), gr.update(interactive=True)
+        else:
+            yield text, _status_html("Transcription complete.", "success"), gr.update(interactive=True)
+    except Exception as e:
+        logger.error("Transcription failed: %s", e)
+        yield "", _status_html(f"Transcription failed: {e}", "error"), gr.update(interactive=True)
+    finally:
+        if auto_unload:
+            from transcriptor import unload_transcriptor
+            unload_transcriptor()
+
+
+def on_unload_transcriptor():
+    from transcriptor import unload_transcriptor
+    unload_transcriptor()
+    return _status_html("HeartTranscriptor unloaded.", "success")
+
+
 def _build_card_html(e):
     """Build HTML for a single history card (display only, no interactive elements)."""
     audio_file = e.get("audio_file", "")
-    audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+    audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
+    # Prevent path traversal
+    if not audio_path.startswith(os.path.realpath(OUTPUT_DIR) + os.sep):
+        audio_path = ""
     title = html_mod.escape(e.get("song_title", "Untitled"))
     ts = e.get("timestamp", "")[:16].replace("T", " ")
     desc = html_mod.escape(e.get("description", ""))
@@ -319,6 +574,12 @@ def _build_card_html(e):
     param_badges = ""
     if p:
         badges = []
+        if p.get("style_reference"):
+            strength = p.get("style_strength", 1.0)
+            strength_label = f"Style: {strength}x" if strength != 1.0 else "Style Ref"
+            badges.append(f'<span style="display:inline-block;background:#553c9a;color:#d6bcfa;padding:2px 8px;border-radius:8px;font-size:0.75em;margin:2px;">{strength_label}</span>')
+        if p.get("seed") is not None:
+            badges.append(f'<span style="display:inline-block;background:#1a365d;color:#63b3ed;padding:2px 8px;border-radius:8px;font-size:0.75em;margin:2px;">Seed: {p["seed"]}</span>')
         for label, key in [("Temp", "temperature"), ("CFG", "cfg_scale"), ("Top-K", "topk"), ("Length", "max_length_sec")]:
             val = p.get(key, "?")
             suffix = "s" if key == "max_length_sec" else ""
@@ -348,9 +609,12 @@ def _build_card_html(e):
 def _build_playlist_html(entries):
     """Build HTML-only playlist player. JS is injected via app.launch(js=...)."""
     tracks = []
+    real_output = os.path.realpath(OUTPUT_DIR) + os.sep
     for e in entries:
         audio_file = e.get("audio_file", "")
-        audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+        audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
+        if not audio_path.startswith(real_output):
+            continue
         if os.path.isfile(audio_path):
             tracks.append({
                 "title": e.get("song_title", "Untitled"),
@@ -675,12 +939,43 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         # 3. Music generation
         gr.Markdown("### Generate music")
 
+        # Style Reference
+        if STYLE_TRANSFER_ENABLED:
+            with gr.Accordion("Style Reference (experimental)", open=False):
+                gr.Markdown("Upload a reference audio to guide the musical style. "
+                            "The model will extract style characteristics and use them during generation.")
+                style_audio = gr.Audio(
+                    label="Reference Audio",
+                    type="filepath",
+                    sources=["upload"],
+                )
+                style_enabled_cb = gr.Checkbox(
+                    label="Use style reference",
+                    value=False,
+                    info="When enabled, the uploaded audio will guide the style of generated music.",
+                )
+                style_strength_sl = gr.Slider(
+                    minimum=0.0, maximum=10.0, value=1.0, step=0.1,
+                    label="Style Strength",
+                    info="0 = no effect, 1 = normal, >1 = amplified style influence",
+                )
+        else:
+            style_audio = gr.State(value=None)
+            style_enabled_cb = gr.State(value=False)
+            style_strength_sl = gr.State(value=1.0)
+
         # Music Generation Settings
         with gr.Accordion("Music Generation Settings", open=False):
             temperature = gr.Slider(0.1, 2.0, value=DEFAULT_GENERATION_PARAMS["temperature"], label="Temperature")
             cfg_scale = gr.Slider(0.0, 5.0, value=DEFAULT_GENERATION_PARAMS["cfg_scale"], label="CFG Scale")
             topk = gr.Slider(1, 200, value=DEFAULT_GENERATION_PARAMS["topk"], step=1, label="Top-K")
             max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
+            seed_box = gr.Number(
+                label="Seed",
+                value=-1,
+                precision=0,
+                info="Set to -1 for random. Use the same seed to reproduce identical results.",
+            )
 
         with gr.Row():
             num_variants = gr.Slider(
@@ -696,6 +991,11 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         # Output - styled HTML status
         status_box = gr.HTML(value="", label="Status")
         audio_out = gr.HTML(value="")
+
+        # Live memory monitor
+        memory_monitor = gr.HTML(value=_get_live_memory_html())
+        mem_timer = gr.Timer(value=3, active=True)
+        mem_timer.tick(fn=_get_live_memory_html, outputs=[memory_monitor])
 
         # Memory Management
         with gr.Accordion("Memory Management", open=False):
@@ -714,6 +1014,8 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             with gr.Row():
                 unload_ollama_btn = gr.Button("Unload Ollama Model", size="sm")
                 unload_btn = gr.Button("Unload Music Pipeline", size="sm")
+                unload_muq_btn = gr.Button("Unload MuQ Model", size="sm")
+                unload_transcriptor_gen_btn = gr.Button("Unload Transcriptor", size="sm")
             ollama_status = gr.Textbox(label="Status", interactive=False, visible=False)
 
         def on_unload_ollama(backend, o_url, o_model):
@@ -728,7 +1030,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             openai_url, openai_model, openai_key,
             llm_temp, llm_timeout, ollama_auto_unload,
         ]
-        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb, num_variants]
+        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb, num_variants, style_audio, style_enabled_cb, style_strength_sl, seed_box]
 
         all_btns = [gen_text_btn, gen_music_btn, cancel_btn]
 
@@ -749,10 +1051,73 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
         unload_ollama_btn.click(on_unload_ollama, [llm_backend, ollama_url, ollama_model], [ollama_status])
         unload_btn.click(on_unload, [], [status_box])
+        def on_unload_muq():
+            from style_transfer import unload_muq
+            unload_muq()
+            return _status_html("MuQ model unloaded.", "success")
+        unload_muq_btn.click(on_unload_muq, [], [status_box])
+        unload_transcriptor_gen_btn.click(on_unload_transcriptor, [], [status_box])
         cancel_btn.click(lambda: cancel_generation(), [], [])
 
         # Clear button
         clear_btn.click(on_clear_all, [gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb, song_desc, song_title_box, lyrics_box, tags_box], [song_desc, song_title_box, lyrics_box, tags_box, status_box])
+
+    if TRANSCRIPTION_ENABLED:
+        with gr.Tab("Transcribe"):
+            gr.Markdown("### Transcribe Lyrics from Audio")
+            gr.Markdown(
+                "Upload an audio file to transcribe its lyrics using HeartTranscriptor. "
+                "For best results, use source-separated vocal tracks "
+                "(e.g., processed with [demucs](https://github.com/adefossez/demucs))."
+            )
+
+            transcribe_audio_input = gr.Audio(
+                label="Audio to Transcribe",
+                type="filepath",
+                sources=["upload"],
+            )
+
+            transcribe_btn = gr.Button("Transcribe", variant="primary", size="lg")
+            transcribe_auto_unload = gr.Checkbox(
+                value=True,
+                label="Auto-unload model after transcription",
+                info="Free GPU/RAM memory automatically when transcription finishes.",
+            )
+            transcribe_status = gr.HTML(value="")
+
+            transcribed_lyrics = gr.Textbox(
+                label="Transcribed Lyrics",
+                lines=12,
+                max_lines=20,
+                interactive=True,
+                placeholder="Transcribed lyrics will appear here...",
+            )
+
+            send_to_generator_btn = gr.Button("Send to Generator", variant="secondary", size="sm")
+
+            with gr.Accordion("Memory Management", open=False):
+                gr.Markdown("HeartTranscriptor uses GPU VRAM (or RAM on CPU). "
+                            "Unload it before generating music if GPU memory is limited.")
+                unload_transcriptor_btn = gr.Button("Unload Transcriptor", size="sm")
+
+            transcribe_btn.click(
+                on_transcribe,
+                inputs=[transcribe_audio_input, transcribe_auto_unload],
+                outputs=[transcribed_lyrics, transcribe_status, transcribe_btn],
+            )
+
+            unload_transcriptor_btn.click(on_unload_transcriptor, [], [transcribe_status])
+
+            def _send_lyrics_to_generator(transcribed_text):
+                if not transcribed_text or not transcribed_text.strip():
+                    return gr.skip(), _status_html("Nothing to send.", "info")
+                return transcribed_text, _status_html("Lyrics sent to Generator tab.", "success")
+
+            send_to_generator_btn.click(
+                _send_lyrics_to_generator,
+                inputs=[transcribed_lyrics],
+                outputs=[lyrics_box, transcribe_status],
+            ).then(fn=None, js=_JS_SWITCH_TO_GENERATE)
 
     with gr.Tab("History") as history_tab:
         history_page = gr.State(value=0)
@@ -851,9 +1216,6 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 return page, _status_html("No entry to delete.", "warning")
             delete_generation(state.get("audio_file", ""))
             return page, _status_html(f"Deleted '{state.get('song_title', 'Untitled')}'.", "success")
-
-        _JS_SWITCH_TO_GENERATE = "()" + \
-            " => document.querySelector('button[role=\"tab\"]').click()"
 
         for _i in range(HISTORY_PAGE_SIZE):
             _load_btns[_i].click(

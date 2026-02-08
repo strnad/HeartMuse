@@ -7,6 +7,25 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+def _env_float(key, default):
+    """Read a float from env, falling back to default on invalid values."""
+    try:
+        return float(os.environ.get(key, default))
+    except (ValueError, TypeError):
+        logger.warning("Invalid value for %s, using default %s", key, default)
+        return float(default)
+
+
+def _env_int(key, default):
+    """Read an int from env, falling back to default on invalid values."""
+    try:
+        return int(os.environ.get(key, default))
+    except (ValueError, TypeError):
+        logger.warning("Invalid value for %s, using default %s", key, default)
+        return int(default)
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CKPT_DIR = os.environ.get("CKPT_DIR", os.path.join(BASE_DIR, "ckpt"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(BASE_DIR, "output"))
@@ -47,13 +66,13 @@ MODEL_VARIANT_LABELS = {
 DEFAULT_MODEL_VARIANT = os.environ.get("MODEL_VARIANT", "rl")
 
 DEFAULT_GENERATION_PARAMS = {
-    "temperature": float(os.environ.get("MUSIC_TEMPERATURE", "1.0")),
-    "cfg_scale": float(os.environ.get("MUSIC_CFG_SCALE", "1.5")),
-    "topk": int(os.environ.get("MUSIC_TOPK", "50")),
-    "max_audio_length_ms": int(os.environ.get("MUSIC_MAX_LENGTH_SEC", "240")) * 1000,
+    "temperature": _env_float("MUSIC_TEMPERATURE", "1.0"),
+    "cfg_scale": _env_float("MUSIC_CFG_SCALE", "1.5"),
+    "topk": _env_int("MUSIC_TOPK", "50"),
+    "max_audio_length_ms": _env_int("MUSIC_MAX_LENGTH_SEC", "240") * 1000,
 }
 
-DEFAULT_NUM_VARIANTS = int(os.environ.get("MUSIC_NUM_VARIANTS", "1"))
+DEFAULT_NUM_VARIANTS = _env_int("MUSIC_NUM_VARIANTS", "1")
 
 DEFAULT_LAZY_LOAD = os.environ.get("LAZY_LOAD", "true").lower() in ("1", "true", "yes")
 
@@ -72,8 +91,18 @@ DEFAULT_OPENAI_MODELS = [
 ]
 
 DEFAULT_LLM_BACKEND = os.environ.get("LLM_BACKEND", "Ollama")
-DEFAULT_LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
-DEFAULT_LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))
+DEFAULT_LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", "0.7")
+DEFAULT_LLM_TIMEOUT = _env_int("LLM_TIMEOUT", "120")
+
+STYLE_TRANSFER_ENABLED = os.environ.get("STYLE_TRANSFER", "true").lower() in ("1", "true", "yes")
+
+TRANSCRIPTION_ENABLED = os.environ.get("TRANSCRIPTION", "true").lower() in ("1", "true", "yes")
+
+TRANSCRIPTOR_MODEL = {
+    "name": "HeartTranscriptor",
+    "repo_id": "HeartMuLa/HeartTranscriptor-oss",
+    "local_dir": "HeartTranscriptor-oss",
+}
 
 SERVER_HOST = os.environ.get("SERVER_HOST", "127.0.0.1")
-SERVER_PORT = int(os.environ.get("SERVER_PORT", "7860"))
+SERVER_PORT = _env_int("SERVER_PORT", "7860")

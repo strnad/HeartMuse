@@ -26,7 +26,11 @@ def _ollama_generate(prompt, system, base_url, model, temperature=0.7, timeout=1
             timeout=timeout,
         )
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        data = resp.json()
+        content = data.get("message", {}).get("content")
+        if content is None:
+            raise ValueError("Unexpected Ollama /api/chat response format")
+        return content
     except requests.HTTPError:
         logger.info("Ollama /api/chat failed, falling back to /api/generate")
     except requests.ConnectionError:
@@ -54,7 +58,17 @@ def _ollama_generate(prompt, system, base_url, model, temperature=0.7, timeout=1
             timeout=timeout,
         )
         resp.raise_for_status()
-        return resp.json()["response"]
+        data = resp.json()
+        content = data.get("response")
+        if content is None:
+            raise ValueError("Unexpected Ollama /api/generate response format")
+        return content
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        raise RuntimeError(
+            f"Ollama returned HTTP {status}. "
+            f"Check if the model '{model}' is available (ollama pull {model})."
+        ) from e
     except requests.ConnectionError:
         raise ConnectionError(
             f"Cannot connect to Ollama at {base_url}. "
@@ -202,7 +216,7 @@ def list_ollama_models(base_url="http://localhost:11434"):
         resp = requests.get(f"{base_url}/api/tags", timeout=10)
         resp.raise_for_status()
         models = resp.json().get("models", [])
-        return [m["name"] for m in models]
+        return [m["name"] for m in models if isinstance(m, dict) and "name" in m]
     except Exception:
         logger.warning("Failed to list Ollama models at %s", base_url)
         return []
