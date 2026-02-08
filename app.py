@@ -266,7 +266,7 @@ def _format_stats_html(timings=None, mem_stats=None, extra_info=None):
     )
 
 
-def on_generate_text(description, title, lyrics, tags,
+def on_generate_text(description, title, lyrics, tags, edit_instructions,
                      gen_desc, gen_title, gen_lyrics, gen_tags,
                      backend, ollama_url, ollama_model,
                      openai_url, openai_model, openai_key,
@@ -293,6 +293,7 @@ def on_generate_text(description, title, lyrics, tags,
             gen_tags=gen_tags,
             backend=backend.lower(),
             max_length_sec=max_length_sec,
+            edit_instructions=edit_instructions,
             **kwargs,
         )
         t_text = time.monotonic() - t_start
@@ -864,159 +865,161 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
     gr.Markdown("# HeartMuse Music Generator")
 
     with gr.Tab("Generate"):
-        # 1. Song Description (highlighted)
-        gr.Markdown("### Describe your song")
-        with gr.Group(elem_id="song-desc-group"):
-            with gr.Row():
-                song_desc = gr.Textbox(
-                    label="Song Description",
-                    placeholder="A romantic ballad about summer love with piano and strings... (or leave empty to generate randomly)",
-                    lines=3,
-                    scale=4,
-                    max_lines=10,
-                )
-                gen_desc_cb = gr.Checkbox(value=False, label="Auto-generate", scale=1)
-
-        # 2. Song Details with checkboxes
-        gr.Markdown("### Song details")
-
         with gr.Row():
-            song_title_box = gr.Textbox(label="Song Title", placeholder="Enter or leave empty to generate...", scale=4)
-            gen_title_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
-
-        with gr.Row():
-            lyrics_box = gr.Textbox(
-                label="Lyrics",
-                placeholder="[verse]\nYour lyrics here...\n\n[chorus]\n...",
-                lines=10,
-                max_lines=10,
-                scale=4,
-            )
-            gen_lyrics_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
-
-        with gr.Row():
-            tags_box = gr.Textbox(
-                label="Tags (comma-separated)",
-                placeholder="pop,female,piano,dreamy,80s,lo-fi,chill,slow",
-                scale=4,
-            )
-            gen_tags_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
-
-        # LLM Settings (moved above Generate Text button)
-        with gr.Accordion("LLM Settings", open=False):
-            llm_backend = gr.Radio(["Ollama", "OpenAI"], value=DEFAULT_LLM_BACKEND, label="Backend")
-            with gr.Group(visible=DEFAULT_LLM_BACKEND == "Ollama") as ollama_group:
-                ollama_url = gr.Textbox(label="Ollama URL", value=DEFAULT_OLLAMA_URL)
-                with gr.Row():
-                    ollama_model = gr.Dropdown(
-                        label="Ollama Model", value=DEFAULT_OLLAMA_MODEL,
-                        choices=[DEFAULT_OLLAMA_MODEL], allow_custom_value=True,
+            # ── LEFT COLUMN: Text Composition ──
+            with gr.Column(scale=3):
+                gr.Markdown("### Describe your song")
+                with gr.Group(elem_id="song-desc-group"):
+                    song_desc = gr.Textbox(
+                        label="Song Description",
+                        placeholder="A romantic ballad about summer love with piano and strings... (or leave empty to generate randomly)",
+                        lines=3,
+                        max_lines=10,
                     )
-                    refresh_ollama_btn = gr.Button("Refresh Models", size="sm")
-                refresh_ollama_btn.click(on_list_ollama, [ollama_url], [ollama_model])
-            with gr.Group(visible=DEFAULT_LLM_BACKEND == "OpenAI") as openai_group:
-                openai_url = gr.Textbox(label="API Base URL", value=DEFAULT_OPENAI_URL)
-                openai_model = gr.Dropdown(
-                    label="Model", value=DEFAULT_OPENAI_MODEL,
-                    choices=DEFAULT_OPENAI_MODELS, allow_custom_value=True,
+                    gen_desc_cb = gr.Checkbox(value=False, label="Auto-generate")
+
+                gr.Markdown("### Song details")
+
+                with gr.Row():
+                    song_title_box = gr.Textbox(label="Song Title", placeholder="Enter or leave empty to generate...", scale=4)
+                    gen_title_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
+
+                with gr.Row():
+                    lyrics_box = gr.Textbox(
+                        label="Lyrics",
+                        placeholder="[verse]\nYour lyrics here...\n\n[chorus]\n...",
+                        lines=10,
+                        max_lines=10,
+                        scale=4,
+                    )
+                    gen_lyrics_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
+
+                edit_instructions = gr.Textbox(
+                    label="Edit Instructions (optional)",
+                    placeholder='e.g., "Change the name Eva to Ela", "Add two verses", "Rework the chorus"',
+                    lines=2,
+                    max_lines=4,
                 )
-                openai_key = gr.Textbox(label="API Key", value=DEFAULT_OPENAI_KEY, type="password")
 
-            def toggle_backend(choice):
-                return (
-                    gr.update(visible=choice == "Ollama"),
-                    gr.update(visible=choice == "OpenAI"),
-                )
+                with gr.Row():
+                    tags_box = gr.Textbox(
+                        label="Tags (comma-separated)",
+                        placeholder="pop,female,piano,dreamy,80s,lo-fi,chill,slow",
+                        scale=4,
+                    )
+                    gen_tags_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
 
-            llm_backend.change(toggle_backend, [llm_backend], [ollama_group, openai_group])
-            llm_temp = gr.Slider(0.0, 2.0, value=DEFAULT_LLM_TEMPERATURE, step=0.1, label="LLM Temperature")
-            llm_timeout = gr.Slider(10, 600, value=DEFAULT_LLM_TIMEOUT, step=10, label="LLM Timeout (seconds)")
+                with gr.Row():
+                    clear_btn = gr.Button("Clear All", size="sm", variant="secondary")
+                    gen_text_btn = gr.Button("Generate Text", variant="primary", size="lg")
 
-        # Clear and Generate text buttons
-        clear_btn = gr.Button("Clear All", size="sm", variant="secondary")
-        gen_text_btn = gr.Button("Generate Text", variant="primary", size="lg")
+                with gr.Accordion("LLM Settings", open=False):
+                    llm_backend = gr.Radio(["Ollama", "OpenAI"], value=DEFAULT_LLM_BACKEND, label="Backend")
+                    with gr.Group(visible=DEFAULT_LLM_BACKEND == "Ollama") as ollama_group:
+                        ollama_url = gr.Textbox(label="Ollama URL", value=DEFAULT_OLLAMA_URL)
+                        with gr.Row():
+                            ollama_model = gr.Dropdown(
+                                label="Ollama Model", value=DEFAULT_OLLAMA_MODEL,
+                                choices=[DEFAULT_OLLAMA_MODEL], allow_custom_value=True,
+                            )
+                            refresh_ollama_btn = gr.Button("Refresh Models", size="sm")
+                        refresh_ollama_btn.click(on_list_ollama, [ollama_url], [ollama_model])
+                    with gr.Group(visible=DEFAULT_LLM_BACKEND == "OpenAI") as openai_group:
+                        openai_url = gr.Textbox(label="API Base URL", value=DEFAULT_OPENAI_URL)
+                        openai_model = gr.Dropdown(
+                            label="Model", value=DEFAULT_OPENAI_MODEL,
+                            choices=DEFAULT_OPENAI_MODELS, allow_custom_value=True,
+                        )
+                        openai_key = gr.Textbox(label="API Key", value=DEFAULT_OPENAI_KEY, type="password")
 
-        # 3. Music generation
-        gr.Markdown("### Generate music")
+                    def toggle_backend(choice):
+                        return (
+                            gr.update(visible=choice == "Ollama"),
+                            gr.update(visible=choice == "OpenAI"),
+                        )
 
-        # Style Reference
-        if STYLE_TRANSFER_ENABLED:
-            with gr.Accordion("Style Reference (experimental)", open=False):
-                gr.Markdown("Upload a reference audio to guide the musical style. "
-                            "The model will extract style characteristics and use them during generation.")
-                style_audio = gr.Audio(
-                    label="Reference Audio",
-                    type="filepath",
-                    sources=["upload"],
-                )
-                style_enabled_cb = gr.Checkbox(
-                    label="Use style reference",
-                    value=False,
-                    info="When enabled, the uploaded audio will guide the style of generated music.",
-                )
-                style_strength_sl = gr.Slider(
-                    minimum=0.0, maximum=10.0, value=1.0, step=0.1,
-                    label="Style Strength",
-                    info="0 = no effect, 1 = normal, >1 = amplified style influence",
-                )
-        else:
-            style_audio = gr.State(value=None)
-            style_enabled_cb = gr.State(value=False)
-            style_strength_sl = gr.State(value=1.0)
+                    llm_backend.change(toggle_backend, [llm_backend], [ollama_group, openai_group])
+                    llm_temp = gr.Slider(0.0, 2.0, value=DEFAULT_LLM_TEMPERATURE, step=0.1, label="LLM Temperature")
+                    llm_timeout = gr.Slider(10, 600, value=DEFAULT_LLM_TIMEOUT, step=10, label="LLM Timeout (seconds)")
 
-        # Music Generation Settings
-        with gr.Accordion("Music Generation Settings", open=False):
-            temperature = gr.Slider(0.1, 2.0, value=DEFAULT_GENERATION_PARAMS["temperature"], label="Temperature")
-            cfg_scale = gr.Slider(0.0, 5.0, value=DEFAULT_GENERATION_PARAMS["cfg_scale"], label="CFG Scale")
-            topk = gr.Slider(1, 200, value=DEFAULT_GENERATION_PARAMS["topk"], step=1, label="Top-K")
-            max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
-            seed_box = gr.Number(
-                label="Seed",
-                value=-1,
-                precision=0,
-                info="Set to -1 for random. Use the same seed to reproduce identical results.",
-            )
+            # ── RIGHT COLUMN: Music Generation & Output ──
+            with gr.Column(scale=2):
+                gr.Markdown("### Generate music")
+                with gr.Row():
+                    gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
+                    cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
+                with gr.Row():
+                    num_variants = gr.Slider(
+                        1, 10, value=DEFAULT_NUM_VARIANTS, step=1,
+                        label="Number of Variants",
+                        info="Generate multiple audio variations from the same lyrics/tags.",
+                    )
+                    autoplay_cb = gr.Checkbox(label="Autoplay", value=True)
 
-        with gr.Row():
-            num_variants = gr.Slider(
-                1, 10, value=DEFAULT_NUM_VARIANTS, step=1,
-                label="Number of Variants",
-                info="Generate multiple audio variations from the same lyrics/tags.",
-            )
-            autoplay_cb = gr.Checkbox(label="Autoplay", value=True)
-        with gr.Row():
-            gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
-            cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
+                status_box = gr.HTML(value="", label="Status")
+                audio_out = gr.HTML(value="")
 
-        # Output - styled HTML status
-        status_box = gr.HTML(value="", label="Status")
-        audio_out = gr.HTML(value="")
+                # Style Reference
+                if STYLE_TRANSFER_ENABLED:
+                    with gr.Accordion("Style Reference (experimental)", open=False):
+                        gr.Markdown("Upload a reference audio to guide the musical style. "
+                                    "The model will extract style characteristics and use them during generation.")
+                        style_audio = gr.Audio(
+                            label="Reference Audio",
+                            type="filepath",
+                            sources=["upload"],
+                        )
+                        style_enabled_cb = gr.Checkbox(
+                            label="Use style reference",
+                            value=False,
+                            info="When enabled, the uploaded audio will guide the style of generated music.",
+                        )
+                        style_strength_sl = gr.Slider(
+                            minimum=0.0, maximum=10.0, value=1.0, step=0.1,
+                            label="Style Strength",
+                            info="0 = no effect, 1 = normal, >1 = amplified style influence",
+                        )
+                else:
+                    style_audio = gr.State(value=None)
+                    style_enabled_cb = gr.State(value=False)
+                    style_strength_sl = gr.State(value=1.0)
 
-        # Live memory monitor
+                with gr.Accordion("Music Generation Settings", open=False):
+                    temperature = gr.Slider(0.1, 2.0, value=DEFAULT_GENERATION_PARAMS["temperature"], label="Temperature")
+                    cfg_scale = gr.Slider(0.0, 5.0, value=DEFAULT_GENERATION_PARAMS["cfg_scale"], label="CFG Scale")
+                    topk = gr.Slider(1, 200, value=DEFAULT_GENERATION_PARAMS["topk"], step=1, label="Top-K")
+                    max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
+                    seed_box = gr.Number(
+                        label="Seed",
+                        value=-1,
+                        precision=0,
+                        info="Set to -1 for random. Use the same seed to reproduce identical results.",
+                    )
+
+                with gr.Accordion("Memory Management", open=False):
+                    model_variant = gr.Dropdown(
+                        choices=_VARIANT_CHOICES,
+                        value=_variant_label_from_name(DEFAULT_MODEL_VARIANT),
+                        label="Model",
+                        info="Select which HeartMuLa model to use. RL version has better style/tag control.",
+                    )
+                    lazy_load_cb = gr.Checkbox(
+                        value=DEFAULT_LAZY_LOAD,
+                        label="Lazy Loading",
+                        info="Load models on demand and free VRAM between generation stages. Useful for GPUs with limited memory.",
+                    )
+                    ollama_auto_unload = gr.Checkbox(value=True, label="Auto-unload Ollama model before music generation")
+                    with gr.Row():
+                        unload_ollama_btn = gr.Button("Unload Ollama Model", size="sm")
+                        unload_btn = gr.Button("Unload Music Pipeline", size="sm")
+                        unload_muq_btn = gr.Button("Unload MuQ Model", size="sm")
+                        unload_transcriptor_gen_btn = gr.Button("Unload Transcriptor", size="sm")
+                    ollama_status = gr.Textbox(label="Status", interactive=False, visible=False)
+
+        # Full-width memory monitor below both columns
         memory_monitor = gr.HTML(value=_get_live_memory_html())
         mem_timer = gr.Timer(value=3, active=True)
         mem_timer.tick(fn=_get_live_memory_html, outputs=[memory_monitor])
-
-        # Memory Management
-        with gr.Accordion("Memory Management", open=False):
-            model_variant = gr.Dropdown(
-                choices=_VARIANT_CHOICES,
-                value=_variant_label_from_name(DEFAULT_MODEL_VARIANT),
-                label="Model",
-                info="Select which HeartMuLa model to use. RL version has better style/tag control.",
-            )
-            lazy_load_cb = gr.Checkbox(
-                value=DEFAULT_LAZY_LOAD,
-                label="Lazy Loading",
-                info="Load models on demand and free VRAM between generation stages. Useful for GPUs with limited memory.",
-            )
-            ollama_auto_unload = gr.Checkbox(value=True, label="Auto-unload Ollama model before music generation")
-            with gr.Row():
-                unload_ollama_btn = gr.Button("Unload Ollama Model", size="sm")
-                unload_btn = gr.Button("Unload Music Pipeline", size="sm")
-                unload_muq_btn = gr.Button("Unload MuQ Model", size="sm")
-                unload_transcriptor_gen_btn = gr.Button("Unload Transcriptor", size="sm")
-            ollama_status = gr.Textbox(label="Status", interactive=False, visible=False)
 
         def on_unload_ollama(backend, o_url, o_model):
             if backend != "Ollama":
@@ -1037,7 +1040,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         # Generate Text button
         gen_text_btn.click(
             on_generate_text,
-            [song_desc, song_title_box, lyrics_box, tags_box,
+            [song_desc, song_title_box, lyrics_box, tags_box, edit_instructions,
              gen_desc_cb, gen_title_cb, gen_lyrics_cb, gen_tags_cb] + llm_inputs + [max_length],
             [song_desc, song_title_box, lyrics_box, tags_box, status_box] + all_btns,
         )
@@ -1129,6 +1132,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         _card_htmls = []
         _card_states = []
         _load_btns = []
+        _edit_btns = []
         _delete_btns = []
         for _i in range(HISTORY_PAGE_SIZE):
             _st = gr.State(value=None)
@@ -1136,9 +1140,11 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             _html = gr.HTML(visible=False)
             with gr.Row(visible=False) as _row:
                 _lb = gr.Button("Load to Generator", size="sm", variant="primary", scale=1)
+                _eb = gr.Button("Load for Edit", size="sm", variant="secondary", scale=1)
                 _db = gr.Button("Delete", size="sm", variant="stop", scale=1)
             _card_htmls.append((_html, _row))
             _load_btns.append(_lb)
+            _edit_btns.append(_eb)
             _delete_btns.append(_db)
 
         with gr.Row():
@@ -1210,6 +1216,22 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 _status_html(f"Loaded '{state.get('song_title', 'Untitled')}' into Generator tab.", "success"),
             )
 
+        def _slot_load_for_edit(state):
+            if not state:
+                return gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), _status_html("No entry selected.", "warning")
+            p = state.get("parameters", {})
+            seed = p.get("seed", -1)
+            if seed is None:
+                seed = -1
+            return (
+                state.get("description", ""),
+                state.get("song_title", ""),
+                state.get("lyrics", ""),
+                state.get("tags", ""),
+                seed,
+                _status_html(f"Loaded '{state.get('song_title', 'Untitled')}' for editing (seed: {seed}).", "success"),
+            )
+
         # Wire up delete handlers (delete files, then refresh page)
         def _slot_delete(state, page):
             if not state:
@@ -1222,6 +1244,11 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 _slot_load,
                 [_card_states[_i]],
                 [song_desc, song_title_box, lyrics_box, tags_box, history_status],
+            ).then(fn=None, js=_JS_SWITCH_TO_GENERATE)
+            _edit_btns[_i].click(
+                _slot_load_for_edit,
+                [_card_states[_i]],
+                [song_desc, song_title_box, lyrics_box, tags_box, seed_box, history_status],
             ).then(fn=None, js=_JS_SWITCH_TO_GENERATE)
             _delete_btns[_i].click(
                 _slot_delete,

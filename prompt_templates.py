@@ -51,6 +51,13 @@ Do NOT include content/story/character/theme tags (e.g. no "love", "heartbreak",
 Format: lowercase,no spaces around commas,like this""",
     }
 
+    # Edit instructions guideline (appended when user provides edit instructions)
+    EDIT_INSTRUCTIONS_GUIDELINE = """The user has provided specific edit instructions. Apply them precisely.
+- Only change what the instructions ask for. Preserve everything else exactly.
+- If instructions say to change a name, change it everywhere it appears.
+- If instructions say to add content, add it while keeping existing content intact.
+- If instructions ask to rework a section, rewrite only that section."""
+
     # Tier 3: Field markers (format specifications)
     FIELD_MARKERS = {
         "title": """===TITLE===
@@ -80,11 +87,12 @@ class PromptBuilder:
     """Builds prompts dynamically based on requested fields."""
 
     @staticmethod
-    def build_system_prompt(fields: List[str]) -> str:
+    def build_system_prompt(fields: List[str], edit_instructions: str = "") -> str:
         """Build a system prompt for generating specified fields.
 
         Args:
             fields: List of field names to generate (e.g., ["title", "lyrics", "tags"])
+            edit_instructions: Optional natural language instructions for editing existing content
 
         Returns:
             Complete system prompt string
@@ -106,6 +114,11 @@ class PromptBuilder:
         parts.append(PromptTemplates.FORMAT_INSTRUCTIONS)
         parts.append("")
 
+        # 3.5. Edit instructions guideline (when user provides edit instructions)
+        if edit_instructions and edit_instructions.strip():
+            parts.append(PromptTemplates.EDIT_INSTRUCTIONS_GUIDELINE)
+            parts.append("")
+
         # 4. Field markers (show format for requested fields)
         for field in fields:
             if field in PromptTemplates.FIELD_MARKERS:
@@ -120,13 +133,15 @@ class PromptBuilder:
 
     @staticmethod
     def build_user_prompt(fields: List[str], context: Dict[str, str],
-                         max_length_sec: Optional[int] = None) -> str:
+                         max_length_sec: Optional[int] = None,
+                         edit_instructions: str = "") -> str:
         """Build user prompt with context for field generation.
 
         Args:
             fields: List of fields to generate
             context: Dict with keys like 'description', 'title', 'lyrics', 'tags' (existing values)
             max_length_sec: Optional duration constraint
+            edit_instructions: Optional natural language instructions for editing existing content
 
         Returns:
             User prompt string
@@ -156,7 +171,10 @@ class PromptBuilder:
                 if field in fields:
                     # Being regenerated - show as draft to improve/extend
                     if field == "lyrics":
-                        context_parts.append(f"Existing lyrics (MUST be preserved exactly, only extend/complete):\n{value}")
+                        if edit_instructions and edit_instructions.strip():
+                            context_parts.append(f"Current lyrics (apply the edit instructions to these):\n{value}")
+                        else:
+                            context_parts.append(f"Existing lyrics (MUST be preserved exactly, only extend/complete):\n{value}")
                     else:
                         context_parts.append(f"Current {field} draft (to be improved): {value}")
                 else:
@@ -177,7 +195,12 @@ class PromptBuilder:
             context_str = "\n\n".join(context_parts)
             fields_str = ", ".join(fields).upper()
 
-            parts.append(f"Based on the following context, generate these fields: {fields_str}")
+            if edit_instructions and edit_instructions.strip():
+                parts.append(f"Apply the following edit instructions to update these fields: {fields_str}")
+                parts.append("")
+                parts.append(f"EDIT INSTRUCTIONS: {edit_instructions.strip()}")
+            else:
+                parts.append(f"Based on the following context, generate these fields: {fields_str}")
             parts.append("")
             parts.append(context_str)
             parts.append("")
@@ -185,9 +208,14 @@ class PromptBuilder:
         else:
             # No context - generate from scratch
             fields_str = ", ".join(fields).upper()
-            parts.append(f"Generate creative and original content for a new song. Create these fields: {fields_str}")
-            parts.append("")
-            parts.append("Be creative and come up with an interesting, unique song concept. Make sure all fields are coherent with each other.")
+            if edit_instructions and edit_instructions.strip():
+                parts.append(f"Generate content for a new song with these fields: {fields_str}")
+                parts.append("")
+                parts.append(f"Follow these creative guidelines: {edit_instructions.strip()}")
+            else:
+                parts.append(f"Generate creative and original content for a new song. Create these fields: {fields_str}")
+                parts.append("")
+                parts.append("Be creative and come up with an interesting, unique song concept. Make sure all fields are coherent with each other.")
             parts.append("")
             parts.append("Generate ONLY the requested fields using the exact marker format specified.")
 

@@ -143,7 +143,8 @@ def _normalize_tags(tags_str: str) -> str:
 
 def generate_checked_fields(description, title, lyrics, tags,
                             gen_desc=False, gen_title=True, gen_lyrics=True, gen_tags=True,
-                            backend="ollama", max_length_sec=None, **kwargs):
+                            backend="ollama", max_length_sec=None, edit_instructions="",
+                            **kwargs):
     """Generate multiple fields in a single LLM call.
 
     Fields that are not checked for generation but have values are provided
@@ -173,8 +174,8 @@ def generate_checked_fields(description, title, lyrics, tags,
     }
 
     # Build prompts using PromptBuilder
-    system_prompt = PromptBuilder.build_system_prompt(fields_to_generate)
-    user_prompt = PromptBuilder.build_user_prompt(fields_to_generate, context, max_length_sec)
+    system_prompt = PromptBuilder.build_system_prompt(fields_to_generate, edit_instructions=edit_instructions)
+    user_prompt = PromptBuilder.build_user_prompt(fields_to_generate, context, max_length_sec, edit_instructions=edit_instructions)
 
     response = _call_llm(user_prompt, system_prompt, backend, **kwargs)
 
