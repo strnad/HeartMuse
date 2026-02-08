@@ -9,10 +9,11 @@ from config import (
     DEFAULT_OPENAI_MODELS, DEFAULT_LLM_BACKEND, DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TIMEOUT, OUTPUT_DIR,
     DEFAULT_LAZY_LOAD, DEFAULT_MODEL_VARIANT, MODEL_VARIANT_LABELS,
+    DEFAULT_NUM_VARIANTS,
 )
 from model_manager import is_ready_for_generation
 from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
-from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled
+from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled, is_generation_cancelled
 from history import generate_output_path, save_generation, load_history, delete_generation
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,34 @@ def _status_html(message, style="info"):
 </div>"""
 
 
+def _build_variants_html(variants, autoplay=False):
+    """Build HTML for one or more audio variant players.
+
+    Args:
+        variants: list of (abs_path, filename) tuples
+        autoplay: if True, autoplay the last audio element
+    """
+    if not variants:
+        return ""
+    if len(variants) == 1:
+        path, fname = variants[0]
+        autoplay_attr = " autoplay" if autoplay else ""
+        return f'<audio controls{autoplay_attr} src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
+
+    parts = []
+    for idx, (path, fname) in enumerate(variants, 1):
+        is_last = idx == len(variants)
+        autoplay_attr = " autoplay" if (autoplay and is_last) else ""
+        parts.append(
+            f'<div style="margin:8px 0;">'
+            f'<span style="color:#a0aec0;font-size:0.9em;font-weight:600;">Variant {idx}</span>'
+            f'<span style="color:#666;font-size:0.8em;margin-left:8px;">{html_mod.escape(fname)}</span>'
+            f'<audio controls{autoplay_attr} src="/gradio_api/file={path}" style="width:100%;margin:4px 0;"></audio>'
+            f'</div>'
+        )
+    return f'<div>{"".join(parts)}</div>'
+
+
 def on_generate_text(description, title, lyrics, tags,
                      gen_desc, gen_title, gen_lyrics, gen_tags,
                      backend, ollama_url, ollama_model,
@@ -143,8 +172,8 @@ def on_generate_text(description, title, lyrics, tags,
 
 def on_generate_music_only(song_title, description, lyrics, tags,
                            temperature, cfg_scale, topk, max_length_sec,
-                           lazy_load, model_variant_label, autoplay):
-    """Generate music only from current fields (no LLM)."""
+                           lazy_load, model_variant_label, autoplay, num_variants):
+    """Generate music only from current fields (no LLM). Supports batch variants."""
     if not lyrics.strip():
         yield gr.skip(), _status_html("Please enter lyrics.", "error"), *_btns_enabled()
         return
@@ -152,6 +181,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         yield gr.skip(), _status_html("Please enter tags.", "error"), *_btns_enabled()
         return
 
+    num_variants = int(num_variants)
     variant_name = _variant_name_from_label(model_variant_label)
 
     yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
@@ -166,45 +196,87 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 yield gr.skip(), _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
                 return
 
-        yield gr.skip(), _status_html("Generating music (this may take a while)...", "progress"), *_btns_disabled()
-
         title = song_title.strip() or "Untitled"
-        output_path = generate_output_path(title)
-        path = generate_music(
-            lyrics=lyrics,
-            tags=tags,
-            temperature=temperature,
-            cfg_scale=cfg_scale,
-            topk=topk,
-            max_audio_length_ms=int(max_length_sec * 1000),
-            output_path=output_path,
-            lazy_load=lazy_load,
-            model_variant=variant_name,
-        )
-        save_generation(
-            song_title=title,
-            description=description,
-            lyrics=lyrics,
-            tags=tags,
-            params={
+        completed = []  # list of (abs_path, filename) tuples
+
+        for i in range(num_variants):
+            # Check cancellation between variants
+            if i > 0 and is_generation_cancelled():
+                yield _build_variants_html(completed, autoplay), \
+                      _status_html(f"Cancelled after {len(completed)} of {num_variants} variants.", "info"), \
+                      *_btns_enabled()
+                return
+
+            if num_variants > 1:
+                status_msg = f"Generating variant {i + 1} of {num_variants}..."
+            else:
+                status_msg = "Generating music (this may take a while)..."
+            yield _build_variants_html(completed, autoplay=False), \
+                  _status_html(status_msg, "progress"), *_btns_disabled()
+
+            output_path = generate_output_path(title)
+            path = generate_music(
+                lyrics=lyrics,
+                tags=tags,
+                temperature=temperature,
+                cfg_scale=cfg_scale,
+                topk=topk,
+                max_audio_length_ms=int(max_length_sec * 1000),
+                output_path=output_path,
+                lazy_load=lazy_load,
+                model_variant=variant_name,
+            )
+
+            params = {
                 "temperature": temperature,
                 "cfg_scale": cfg_scale,
                 "topk": topk,
                 "max_length_sec": max_length_sec,
                 "lazy_load": lazy_load,
                 "model_variant": variant_name,
-            },
-            audio_path=path,
-        )
-        autoplay_attr = " autoplay" if autoplay else ""
-        audio_html = f'<audio controls{autoplay_attr} src="/gradio_api/file={path}" style="width:100%;margin:10px 0;"></audio>'
-        yield audio_html, _status_html(f"Music saved as {os.path.basename(path)}", "success"), *_btns_enabled()
+            }
+            if num_variants > 1:
+                params["batch_total"] = num_variants
+                params["batch_variant"] = i + 1
+            save_generation(
+                song_title=title if num_variants == 1 else f"{title} (Variant {i + 1})",
+                description=description,
+                lyrics=lyrics,
+                tags=tags,
+                params=params,
+                audio_path=path,
+            )
+            completed.append((path, os.path.basename(path)))
+
+            is_last = i == num_variants - 1
+            if is_last:
+                if num_variants > 1:
+                    msg = f"All {num_variants} variants generated."
+                else:
+                    msg = f"Music saved as {os.path.basename(path)}"
+                yield _build_variants_html(completed, autoplay), \
+                      _status_html(msg, "success"), *_btns_enabled()
+            else:
+                yield _build_variants_html(completed, autoplay=False), \
+                      _status_html(f"Variant {i + 1} of {num_variants} complete.", "info"), \
+                      *_btns_disabled()
+
     except GenerationCancelled:
-        yield gr.skip(), _status_html("Generation cancelled.", "info"), *_btns_enabled()
+        if completed:
+            yield _build_variants_html(completed, autoplay), \
+                  _status_html(f"Cancelled after {len(completed)} of {num_variants} variants.", "info"), \
+                  *_btns_enabled()
+        else:
+            yield gr.skip(), _status_html("Generation cancelled.", "info"), *_btns_enabled()
     except Exception as e:
         logger.error("Music generation failed: %s", e)
         e.__traceback__ = None  # release stack frame refs to GPU tensors
-        yield gr.skip(), _status_html(f"Error: {e}", "error"), *_btns_enabled()
+        if completed:
+            yield _build_variants_html(completed, autoplay), \
+                  _status_html(f"Error on variant {len(completed) + 1}: {e}", "error"), \
+                  *_btns_enabled()
+        else:
+            yield gr.skip(), _status_html(f"Error: {e}", "error"), *_btns_enabled()
 
 
 def on_unload():
@@ -610,7 +682,13 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             topk = gr.Slider(1, 200, value=DEFAULT_GENERATION_PARAMS["topk"], step=1, label="Top-K")
             max_length = gr.Slider(10, 240, value=DEFAULT_GENERATION_PARAMS["max_audio_length_ms"] // 1000, step=10, label="Max Length (seconds)")
 
-        autoplay_cb = gr.Checkbox(label="Autoplay", value=True)
+        with gr.Row():
+            num_variants = gr.Slider(
+                1, 10, value=DEFAULT_NUM_VARIANTS, step=1,
+                label="Number of Variants",
+                info="Generate multiple audio variations from the same lyrics/tags.",
+            )
+            autoplay_cb = gr.Checkbox(label="Autoplay", value=True)
         with gr.Row():
             gen_music_btn = gr.Button("Generate Music", variant="primary", size="lg")
             cancel_btn = gr.Button("Cancel", variant="stop", size="lg", interactive=False)
@@ -650,7 +728,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             openai_url, openai_model, openai_key,
             llm_temp, llm_timeout, ollama_auto_unload,
         ]
-        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb]
+        music_inputs = [temperature, cfg_scale, topk, max_length, lazy_load_cb, model_variant, autoplay_cb, num_variants]
 
         all_btns = [gen_text_btn, gen_music_btn, cancel_btn]
 

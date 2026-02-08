@@ -34,6 +34,11 @@ def cancel_generation():
     _cancel_event.set()
 
 
+def is_generation_cancelled():
+    """Check if cancellation has been requested."""
+    return _cancel_event.is_set()
+
+
 def get_pipeline(lazy_load=False, model_variant=None):
     """Get or initialize the HeartMuLa pipeline.
 

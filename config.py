@@ -53,6 +53,8 @@ DEFAULT_GENERATION_PARAMS = {
     "max_audio_length_ms": int(os.environ.get("MUSIC_MAX_LENGTH_SEC", "240")) * 1000,
 }
 
+DEFAULT_NUM_VARIANTS = int(os.environ.get("MUSIC_NUM_VARIANTS", "1"))
+
 DEFAULT_LAZY_LOAD = os.environ.get("LAZY_LOAD", "true").lower() in ("1", "true", "yes")
 
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
