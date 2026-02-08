@@ -59,7 +59,8 @@ def load_history():
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     entries.append(json.load(f))
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Skipping corrupted history file %s: %s", fname, exc)
                 continue
     entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
     return entries

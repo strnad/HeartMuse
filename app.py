@@ -19,6 +19,7 @@ from history import generate_output_path, save_generation, load_history, delete_
 logger = logging.getLogger(__name__)
 
 HISTORY_PAGE_SIZE = 10
+_JS_SWITCH_TO_GENERATE = "() => document.querySelector('button[role=\"tab\"]').click()"
 
 # Map display labels to internal variant names
 _VARIANT_CHOICES = list(MODEL_VARIANT_LABELS.values())
@@ -186,19 +187,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
     variant_name = _variant_name_from_label(model_variant_label)
     seed_val = None if seed is None or seed < 0 else int(seed)
 
-    # Extract style embedding from reference audio if enabled
     style_embedding = None
-    if style_enabled and style_audio:
-        yield gr.skip(), _status_html("Extracting style from reference audio...", "progress"), *_btns_disabled()
-        try:
-            from style_transfer import extract_style_embedding
-            style_embedding = extract_style_embedding(style_audio)
-            if style_strength != 1.0:
-                style_embedding = style_embedding * style_strength
-        except Exception as e:
-            logger.error("Style extraction failed: %s", e)
-            yield gr.skip(), _status_html(f"Style extraction failed: {e}", "error"), *_btns_enabled()
-            return
 
     yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
 
@@ -210,6 +199,19 @@ def on_generate_music_only(song_title, description, lyrics, tags,
             ensure_models_downloaded(variant_name)
             if not is_ready_for_generation(variant_name):
                 yield gr.skip(), _status_html("Model download failed. Check your internet connection and disk space.", "error"), *_btns_enabled()
+                return
+
+        # Extract style embedding from reference audio if enabled
+        if style_enabled and style_audio:
+            yield gr.skip(), _status_html("Extracting style from reference audio...", "progress"), *_btns_disabled()
+            try:
+                from style_transfer import extract_style_embedding
+                style_embedding = extract_style_embedding(style_audio)
+                if style_strength != 1.0:
+                    style_embedding = style_embedding * style_strength
+            except Exception as e:
+                logger.error("Style extraction failed: %s", e)
+                yield gr.skip(), _status_html(f"Style extraction failed: {e}", "error"), *_btns_enabled()
                 return
 
         title = song_title.strip() or "Untitled"
@@ -364,7 +366,10 @@ def on_unload_transcriptor():
 def _build_card_html(e):
     """Build HTML for a single history card (display only, no interactive elements)."""
     audio_file = e.get("audio_file", "")
-    audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+    audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
+    # Prevent path traversal
+    if not audio_path.startswith(os.path.realpath(OUTPUT_DIR) + os.sep):
+        audio_path = ""
     title = html_mod.escape(e.get("song_title", "Untitled"))
     ts = e.get("timestamp", "")[:16].replace("T", " ")
     desc = html_mod.escape(e.get("description", ""))
@@ -420,9 +425,12 @@ def _build_card_html(e):
 def _build_playlist_html(entries):
     """Build HTML-only playlist player. JS is injected via app.launch(js=...)."""
     tracks = []
+    real_output = os.path.realpath(OUTPUT_DIR) + os.sep
     for e in entries:
         audio_file = e.get("audio_file", "")
-        audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+        audio_path = os.path.realpath(os.path.join(OUTPUT_DIR, audio_file))
+        if not audio_path.startswith(real_output):
+            continue
         if os.path.isfile(audio_path):
             tracks.append({
                 "title": e.get("song_title", "Untitled"),
@@ -911,8 +919,6 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
             unload_transcriptor_btn.click(on_unload_transcriptor, [], [transcribe_status])
 
-            _JS_SWITCH_TO_GENERATE = "() => document.querySelector('button[role=\"tab\"]').click()"
-
             def _send_lyrics_to_generator(transcribed_text):
                 if not transcribed_text or not transcribed_text.strip():
                     return gr.skip(), _status_html("Nothing to send.", "info")
@@ -1021,9 +1027,6 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 return page, _status_html("No entry to delete.", "warning")
             delete_generation(state.get("audio_file", ""))
             return page, _status_html(f"Deleted '{state.get('song_title', 'Untitled')}'.", "success")
-
-        _JS_SWITCH_TO_GENERATE = "()" + \
-            " => document.querySelector('button[role=\"tab\"]').click()"
 
         for _i in range(HISTORY_PAGE_SIZE):
             _load_btns[_i].click(

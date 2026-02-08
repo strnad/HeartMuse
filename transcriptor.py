@@ -40,8 +40,9 @@ def get_transcriptor():
             )
         except torch.cuda.OutOfMemoryError:
             logger.warning("CUDA OOM for transcriptor, falling back to CPU")
+            device = torch.device("cpu")
             _transcriptor = HeartTranscriptorPipeline.from_pretrained(
-                CKPT_DIR, device=torch.device("cpu"), dtype=torch.float32,
+                CKPT_DIR, device=device, dtype=torch.float32,
             )
         logger.info("HeartTranscriptor loaded on %s", device)
         return _transcriptor
@@ -67,4 +68,4 @@ def transcribe_audio(audio_path: str) -> str:
     pipe = get_transcriptor()
     with torch.no_grad():
         result = pipe(audio_path, **TRANSCRIPTION_PARAMS)
-    return result["text"]
+    return result.get("text", "")

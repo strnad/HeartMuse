@@ -43,8 +43,15 @@ def extract_style_embedding(audio_path: str) -> torch.Tensor:
     """
     import librosa
 
+    try:
+        wav, _sr = librosa.load(audio_path, sr=24000)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load audio file: {e}. "
+            "Ensure the file is a valid audio format (WAV, MP3, FLAC, etc.)."
+        ) from e
+
     model = get_muq_model()
-    wav, _sr = librosa.load(audio_path, sr=24000)
     wavs = torch.tensor(wav).unsqueeze(0).float()  # [1, samples]
     with torch.no_grad():
         embedding = model(wavs=wavs)  # [1, 512]
