@@ -8,7 +8,7 @@ os.environ["HF_HUB_ETAG_TIMEOUT"] = "300"
 
 from huggingface_hub import snapshot_download, hf_hub_download
 from config import (
-    CKPT_DIR, MODEL_VARIANTS, CODEC_MODEL,
+    CKPT_DIR, MODEL_VARIANTS, CODEC_MODEL, TRANSCRIPTOR_MODEL,
     HEARTMULGEN_REPO, HEARTMULGEN_FILES, DEFAULT_MODEL_VARIANT,
 )
 
@@ -40,21 +40,6 @@ def _is_model_downloaded(local_dir):
     path = os.path.join(CKPT_DIR, local_dir)
     return os.path.isdir(path) and len(os.listdir(path)) > 0
 
-
-def get_model_status(variant=None):
-    """Return list of (name, downloaded) for the selected variant + codec.
-
-    Args:
-        variant: Variant key ("rl", "base") or None for default.
-    """
-    if variant is None:
-        variant = DEFAULT_MODEL_VARIANT
-    v = MODEL_VARIANTS.get(variant, MODEL_VARIANTS["rl"])
-
-    return [
-        (v["name"], _is_model_downloaded(v["local_dir"])),
-        (CODEC_MODEL["name"], _is_model_downloaded(CODEC_MODEL["local_dir"])),
-    ]
 
 
 def is_ready_for_generation(variant=None):
@@ -114,6 +99,22 @@ def download_all_models(variant=None):
         results.append(f"Error downloading {CODEC_MODEL['name']}: {e}")
 
     return "\n".join(results)
+
+
+def is_transcriptor_downloaded():
+    """Check if HeartTranscriptor model is downloaded."""
+    return _is_model_downloaded(TRANSCRIPTOR_MODEL["local_dir"])
+
+
+def download_transcriptor():
+    """Download HeartTranscriptor model if not present."""
+    local_path = os.path.join(CKPT_DIR, TRANSCRIPTOR_MODEL["local_dir"])
+    os.makedirs(local_path, exist_ok=True)
+    try:
+        snapshot_download(repo_id=TRANSCRIPTOR_MODEL["repo_id"], local_dir=local_path)
+        logger.info("Downloaded %s", TRANSCRIPTOR_MODEL["name"])
+    except Exception as e:
+        logger.error("Failed to download %s: %s", TRANSCRIPTOR_MODEL["name"], e)
 
 
 def ensure_gen_config():

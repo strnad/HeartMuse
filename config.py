@@ -75,5 +75,15 @@ DEFAULT_LLM_BACKEND = os.environ.get("LLM_BACKEND", "Ollama")
 DEFAULT_LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
 DEFAULT_LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))
 
+STYLE_TRANSFER_ENABLED = os.environ.get("STYLE_TRANSFER", "true").lower() in ("1", "true", "yes")
+
+TRANSCRIPTION_ENABLED = os.environ.get("TRANSCRIPTION", "true").lower() in ("1", "true", "yes")
+
+TRANSCRIPTOR_MODEL = {
+    "name": "HeartTranscriptor",
+    "repo_id": "HeartMuLa/HeartTranscriptor-oss",
+    "local_dir": "HeartTranscriptor-oss",
+}
+
 SERVER_HOST = os.environ.get("SERVER_HOST", "127.0.0.1")
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "7860"))

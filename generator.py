@@ -127,7 +127,8 @@ def ensure_models_downloaded(model_variant=None):
 
 def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
                    max_audio_length_ms=240_000, output_path=None,
-                   lazy_load=None, model_variant=None):
+                   lazy_load=None, model_variant=None, style_embedding=None,
+                   seed=None):
     """Generate music and return path to output file."""
     if lazy_load is None:
         lazy_load = DEFAULT_LAZY_LOAD
@@ -152,6 +153,20 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
 
         pipe = get_pipeline(lazy_load=lazy_load, model_variant=model_variant)
 
+        # Install style embedding monkeypatch (inject real MuQ embedding instead of zeros)
+        if style_embedding is not None:
+            pipe._style_embedding = style_embedding.to(pipe.mula_device)
+            _orig_preprocess = pipe.preprocess.__func__
+
+            def _patched_preprocess(self, inputs, cfg_scale):
+                result = _orig_preprocess(self, inputs, cfg_scale)
+                if hasattr(self, '_style_embedding') and self._style_embedding is not None:
+                    emb = self._style_embedding
+                    result["muq_embed"][:] = emb.unsqueeze(0).expand_as(result["muq_embed"])
+                return result
+
+            pipe.preprocess = _patched_preprocess.__get__(pipe, type(pipe))
+
         mula_model = pipe.mula
 
         # Install cancellation hook using weak references so that heartlib's
@@ -172,6 +187,11 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
         del mula_model  # release strong reference; only pipe._mula remains
 
         try:
+            if seed is not None:
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed)
+
             with torch.no_grad():
                 pipe(
                     {"lyrics": lyrics_file.name, "tags": tags_file.name},
@@ -191,6 +211,12 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
                 del model.generate_frame
             del model
     finally:
+        # Clean up style embedding monkeypatch
+        if hasattr(pipe, '_style_embedding'):
+            del pipe._style_embedding
+        if 'preprocess' in pipe.__dict__:
+            del pipe.preprocess  # restore original class method
+
         _cancel_event.clear()
         for f in (lyrics_file.name, tags_file.name):
             try:
