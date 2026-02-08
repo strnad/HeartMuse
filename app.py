@@ -553,6 +553,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 label="Lyrics",
                 placeholder="[verse]\nYour lyrics here...\n\n[chorus]\n...",
                 lines=10,
+                max_lines=10,
                 scale=4,
             )
             gen_lyrics_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
@@ -773,12 +774,15 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             delete_generation(state.get("audio_file", ""))
             return page, _status_html(f"Deleted '{state.get('song_title', 'Untitled')}'.", "success")
 
+        _JS_SWITCH_TO_GENERATE = "()" + \
+            " => document.querySelector('button[role=\"tab\"]').click()"
+
         for _i in range(HISTORY_PAGE_SIZE):
             _load_btns[_i].click(
                 _slot_load,
                 [_card_states[_i]],
                 [song_desc, song_title_box, lyrics_box, tags_box, history_status],
-            )
+            ).then(fn=None, js=_JS_SWITCH_TO_GENERATE)
             _delete_btns[_i].click(
                 _slot_delete,
                 [_card_states[_i], history_page],
