@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import html as html_mod
@@ -272,6 +273,48 @@ def _build_card_html(e):
 </div>"""
 
 
+def _build_playlist_html(entries):
+    """Build HTML-only playlist player. JS is injected via app.launch(js=...)."""
+    tracks = []
+    for e in entries:
+        audio_file = e.get("audio_file", "")
+        audio_path = os.path.abspath(os.path.join(OUTPUT_DIR, audio_file))
+        if os.path.isfile(audio_path):
+            tracks.append({
+                "title": e.get("song_title", "Untitled"),
+                "ts": e.get("timestamp", "")[:16].replace("T", " "),
+                "src": f"/gradio_api/file={audio_path}",
+            })
+    if not tracks:
+        return ""
+    tracks_attr = html_mod.escape(json.dumps(tracks))
+    return f'''<div id="hm-playlist-player" data-tracks="{tracks_attr}" style="border:1px solid #444;border-radius:12px;padding:16px;background:#1a1a2e;margin-bottom:16px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+    <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
+      <span style="font-size:1.2em;">&#9835;</span>
+      <span id="hm-pl-title" style="color:#e2e8f0;font-weight:600;font-size:1.05em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">&mdash;</span>
+    </div>
+    <span id="hm-pl-ts" style="color:#888;font-size:0.8em;white-space:nowrap;margin-left:12px;"></span>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+    <button id="hm-pl-prev" title="Previous" style="background:#2d3748;color:#e2e8f0;border:1px solid #555;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.9em;">&#9664;&#9664;</button>
+    <button id="hm-pl-play" title="Play" style="background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:1.1em;min-width:44px;">&#9654;</button>
+    <button id="hm-pl-next" title="Next" style="background:#2d3748;color:#e2e8f0;border:1px solid #555;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.9em;">&#9654;&#9654;</button>
+    <span style="flex:1;"></span>
+    <button id="hm-pl-mode" title="Toggle shuffle" style="background:#2d3748;color:#e2e8f0;border:1px solid #555;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.8em;">Sequential</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+    <span id="hm-pl-time" style="color:#888;font-size:0.8em;min-width:36px;">0:00</span>
+    <div id="hm-pl-bar" style="flex:1;height:6px;background:#2d3748;border-radius:3px;cursor:pointer;position:relative;">
+      <div id="hm-pl-fill" style="height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:3px;width:0%;transition:width 0.1s linear;"></div>
+    </div>
+    <span id="hm-pl-dur" style="color:#888;font-size:0.8em;min-width:36px;text-align:right;">0:00</span>
+  </div>
+  <div id="hm-pl-counter" style="text-align:center;color:#666;font-size:0.75em;"></div>
+  <audio id="hm-pl-audio" preload="auto"></audio>
+</div>'''
+
+
 # ─── UI ───
 
 CUSTOM_CSS = """
@@ -281,6 +324,204 @@ CUSTOM_CSS = """
     padding: 12px;
     background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(59,130,246,0.02));
 }
+"""
+
+PLAYLIST_JS = """
+(function() {
+  var SK = '__hmPlState';
+  var lastHash = '';
+  var audio = null;
+
+  function init() {
+    var el = document.getElementById('hm-playlist-player');
+    if (!el) return;
+    var raw = el.getAttribute('data-tracks');
+    if (!raw) return;
+    // Skip if tracks haven't changed
+    var hash = raw.length + ':' + raw.slice(0, 100);
+    if (hash === lastHash && audio && document.contains(audio)) return;
+    lastHash = hash;
+
+    var tracks;
+    try { tracks = JSON.parse(raw); } catch(e) { return; }
+    if (!tracks.length) return;
+
+    var prev = window[SK] || {};
+    var ci = (typeof prev.ci === 'number' && prev.ci < tracks.length) ? prev.ci : 0;
+    var shuf = prev.shuf || false;
+    var shufOrd = prev.shufOrd || [];
+    var wasPlay = prev.wasPlay || false;
+    var savedT = prev.savedT || 0;
+    var savedSrc = prev.savedSrc || '';
+
+    // Create persistent audio element (survives Gradio re-renders)
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.preload = 'auto';
+      audio.style.display = 'none';
+      document.body.appendChild(audio);
+    }
+
+    var playBtn = document.getElementById('hm-pl-play');
+    var prevBtn = document.getElementById('hm-pl-prev');
+    var nextBtn = document.getElementById('hm-pl-next');
+    var modeBtn = document.getElementById('hm-pl-mode');
+    var titleEl = document.getElementById('hm-pl-title');
+    var tsEl = document.getElementById('hm-pl-ts');
+    var fill = document.getElementById('hm-pl-fill');
+    var timeEl = document.getElementById('hm-pl-time');
+    var durEl = document.getElementById('hm-pl-dur');
+    var ctrEl = document.getElementById('hm-pl-counter');
+    var bar = document.getElementById('hm-pl-bar');
+
+    if (!playBtn || !bar) return;
+
+    function fmt(s) {
+      if (isNaN(s)) return '0:00';
+      var m = Math.floor(s/60), sec = Math.floor(s%60);
+      return m + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+    function genShuf() {
+      shufOrd = [];
+      for (var i = 0; i < tracks.length; i++) shufOrd.push(i);
+      for (var i = shufOrd.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var t = shufOrd[i]; shufOrd[i] = shufOrd[j]; shufOrd[j] = t;
+      }
+    }
+    function ri(idx) { return shuf ? (shufOrd[idx] || 0) : idx; }
+    function loadTrack(idx) {
+      ci = idx;
+      var t = tracks[ri(idx)];
+      audio.src = t.src;
+      titleEl.textContent = t.title;
+      tsEl.textContent = t.ts;
+      ctrEl.textContent = 'Track ' + (idx + 1) + ' of ' + tracks.length;
+      fill.style.width = '0%';
+      timeEl.textContent = '0:00';
+      durEl.textContent = '0:00';
+    }
+    function playTrack(idx) {
+      loadTrack(idx);
+      audio.play().catch(function(){});
+      playBtn.innerHTML = '\\u23F8';
+    }
+    function save() {
+      window[SK] = {
+        ci: ci, shuf: shuf, shufOrd: shufOrd,
+        wasPlay: !audio.paused, savedT: audio.currentTime || 0, savedSrc: audio.src || ''
+      };
+    }
+
+    // Sync play button with audio state
+    function syncBtn() {
+      playBtn.innerHTML = audio.paused ? '\\u25B6' : '\\u23F8';
+    }
+
+    playBtn.onclick = function() {
+      if (audio.paused) {
+        if (!audio.src) loadTrack(0);
+        audio.play().catch(function(){});
+      } else {
+        audio.pause();
+      }
+      syncBtn();
+    };
+    nextBtn.onclick = function() { playTrack((ci + 1) % tracks.length); };
+    prevBtn.onclick = function() {
+      if (audio.currentTime > 3) audio.currentTime = 0;
+      else playTrack((ci - 1 + tracks.length) % tracks.length);
+    };
+    modeBtn.onclick = function() {
+      shuf = !shuf;
+      modeBtn.textContent = shuf ? 'Shuffle' : 'Sequential';
+      modeBtn.style.background = shuf ? '#3b82f6' : '#2d3748';
+      if (shuf) genShuf();
+      save();
+    };
+
+    // Remove old listeners to avoid duplicates
+    audio.onended = function() {
+      var nx = ci + 1;
+      if (nx < tracks.length) playTrack(nx);
+      else { if (shuf) genShuf(); playTrack(0); }
+    };
+    audio.ontimeupdate = function() {
+      var f = document.getElementById('hm-pl-fill');
+      var te = document.getElementById('hm-pl-time');
+      var de = document.getElementById('hm-pl-dur');
+      if (f && audio.duration) {
+        f.style.width = (audio.currentTime / audio.duration * 100) + '%';
+        te.textContent = fmt(audio.currentTime);
+        de.textContent = fmt(audio.duration);
+      }
+      save();
+    };
+    bar.onclick = function(e) {
+      if (audio.duration) {
+        var r = bar.getBoundingClientRect();
+        audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration;
+      }
+    };
+
+    // Mutual exclusion with card players
+    audio.onplay = function() {
+      document.querySelectorAll('audio[controls]').forEach(function(x) {
+        if (!x.paused) x.pause();
+      });
+    };
+    if (!window.__hmPlCapture) {
+      window.__hmPlCapture = true;
+      document.addEventListener('play', function(e) {
+        if (audio && e.target !== audio && e.target.tagName === 'AUDIO') {
+          audio.pause();
+          var pb = document.getElementById('hm-pl-play');
+          if (pb) pb.innerHTML = '\\u25B6';
+          save();
+        }
+      }, true);
+    }
+
+    // Restore state
+    if (shuf) {
+      modeBtn.textContent = 'Shuffle';
+      modeBtn.style.background = '#3b82f6';
+      if (!shufOrd.length || shufOrd.length !== tracks.length) genShuf();
+    }
+
+    // If audio is already playing (persistent element), just sync UI
+    if (!audio.paused && audio.src) {
+      // Find which track matches current src
+      for (var i = 0; i < tracks.length; i++) {
+        if (audio.src.indexOf(tracks[i].src) !== -1) {
+          ci = shuf ? shufOrd.indexOf(i) : i;
+          if (ci < 0) ci = 0;
+          break;
+        }
+      }
+      var t = tracks[ri(ci)];
+      titleEl.textContent = t.title;
+      tsEl.textContent = t.ts;
+      ctrEl.textContent = 'Track ' + (ci + 1) + ' of ' + tracks.length;
+      syncBtn();
+    } else {
+      loadTrack(ci);
+      if (wasPlay && savedSrc) {
+        var expected = tracks[ri(ci)] ? tracks[ri(ci)].src : '';
+        if (expected && savedSrc.indexOf(expected) !== -1) {
+          audio.currentTime = savedT;
+          audio.play().catch(function(){});
+          syncBtn();
+        }
+      }
+    }
+  }
+
+  // Run init now and observe DOM for Gradio updates
+  init();
+  new MutationObserver(function() { setTimeout(init, 50); })
+    .observe(document.body, { childList: true, subtree: true });
+})();
 """
 
 with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
@@ -436,6 +677,7 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
     with gr.Tab("History") as history_tab:
         history_page = gr.State(value=0)
+        playlist_player = gr.HTML(value="")
         history_status = gr.HTML(value="")
         page_info = gr.HTML(value="")
 
@@ -459,21 +701,21 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             prev_btn = gr.Button("Previous", size="sm")
             next_btn = gr.Button("Next", size="sm")
 
-        # Build the flat output list: [html0, row0, state0, html1, row1, state1, ..., page_info, history_page]
-        _refresh_outputs = []
+        # Card-only outputs (for page navigation — no playlist rebuild)
+        _card_outputs = []
         for _i in range(HISTORY_PAGE_SIZE):
             _html_comp, _row_comp = _card_htmls[_i]
-            _refresh_outputs.extend([_html_comp, _row_comp, _card_states[_i]])
-        _refresh_outputs.extend([page_info, history_page])
+            _card_outputs.extend([_html_comp, _row_comp, _card_states[_i]])
+        _card_outputs.extend([page_info, history_page])
 
-        def _refresh_history(page):
-            """Rebuild all card slots for the given page."""
-            page = int(page or 0)
-            entries = load_history()
+        # Full outputs including playlist player
+        _refresh_outputs = [playlist_player] + _card_outputs
+
+        def _build_cards(page, entries):
+            """Build card slot updates for a given page."""
             total = len(entries)
             max_page = max(0, (total - 1) // HISTORY_PAGE_SIZE) if total > 0 else 0
             page = min(page, max_page)
-
             start = page * HISTORY_PAGE_SIZE
             page_entries = entries[start:start + HISTORY_PAGE_SIZE]
 
@@ -499,6 +741,18 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             updates.append(gr.HTML(value=info))
             updates.append(page)
             return updates
+
+        def _refresh_history(page):
+            """Full refresh: playlist player + all card slots."""
+            page = int(page or 0)
+            entries = load_history()
+            return [_build_playlist_html(entries)] + _build_cards(page, entries)
+
+        def _refresh_cards_only(page):
+            """Cards-only refresh for page navigation (keeps playlist playing)."""
+            page = int(page or 0)
+            entries = load_history()
+            return _build_cards(page, entries)
 
         # Wire up load handlers (read entry data from per-slot State)
         def _slot_load(state):
@@ -544,9 +798,9 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             return min(max_page, page + 1)
 
         prev_btn.click(_go_prev, [history_page], [history_page]).then(
-            _refresh_history, [history_page], _refresh_outputs)
+            _refresh_cards_only, [history_page], _card_outputs)
         next_btn.click(_go_next, [history_page], [history_page]).then(
-            _refresh_history, [history_page], _refresh_outputs)
+            _refresh_cards_only, [history_page], _card_outputs)
 
         # Refresh when switching to this tab
         history_tab.select(_refresh_history, [history_page], _refresh_outputs)
@@ -556,4 +810,4 @@ if __name__ == "__main__":
     import sys
     share = "--share" in sys.argv
     from config import SERVER_HOST, SERVER_PORT
-    app.launch(share=share, server_name=SERVER_HOST, server_port=SERVER_PORT, allowed_paths=[OUTPUT_DIR])
+    app.launch(share=share, server_name=SERVER_HOST, server_port=SERVER_PORT, allowed_paths=[OUTPUT_DIR], js=PLAYLIST_JS)
