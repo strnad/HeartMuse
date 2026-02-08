@@ -188,10 +188,11 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
         del mula_model  # release strong reference; only pipe._mula remains
 
         try:
-            if seed is not None:
-                torch.manual_seed(seed)
-                if torch.cuda.is_available():
-                    torch.cuda.manual_seed_all(seed)
+            if seed is None:
+                seed = torch.randint(0, 2**32, (1,)).item()
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
             with torch.no_grad():
                 pipe(
@@ -202,7 +203,7 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
                     temperature=temperature,
                     cfg_scale=cfg_scale,
                 )
-            return output_path
+            return output_path, seed
         except Exception:
             _force_gpu_cleanup()
             raise

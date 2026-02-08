@@ -234,7 +234,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 
             output_path = generate_output_path(title)
             variant_seed = (seed_val + i) if seed_val is not None else None
-            path = generate_music(
+            path, used_seed = generate_music(
                 lyrics=lyrics,
                 tags=tags,
                 temperature=temperature,
@@ -257,7 +257,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 "model_variant": variant_name,
                 "style_reference": bool(style_embedding is not None),
                 "style_strength": style_strength if style_embedding is not None else None,
-                "seed": variant_seed,
+                "seed": used_seed,
             }
             if num_variants > 1:
                 params["batch_total"] = num_variants
