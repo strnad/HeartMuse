@@ -24,6 +24,21 @@ Open **http://localhost:7860** and start creating!
 
 ---
 
+## Features at a Glance
+
+- **Smart Text Generation** - AI writes lyrics, titles, tags, and descriptions via Ollama (local) or OpenAI
+- **HeartMuLa Music Generation** - two model variants (RL and Base), up to 240s songs
+- **Style Transfer** - upload reference audio to influence the musical style (MuQ-MuLan)
+- **Audio Transcription** - extract lyrics from existing audio (HeartTranscriptor)
+- **Batch Variants** - generate 1-10 variations of the same song in one go
+- **Edit Instructions** - refine generated text with natural language commands
+- **History & Playlist** - browse, replay, and manage all past generations
+- **Live Memory Monitor** - real-time GPU/RAM usage tracking
+- **Seed Control** - reproduce exact results with fixed seeds
+- **100% Local** - everything runs on your machine with Ollama (or use OpenAI API)
+
+---
+
 ## Why HeartMuse?
 
 ### Flexible Text Generation - Total Creative Control
@@ -93,6 +108,20 @@ When "Generate/Enhance" is checked for lyrics that already have content:
 - AI **preserves** everything you wrote
 - AI **never deletes** your content
 - AI **never rewrites** existing sections from scratch
+
+#### Edit Instructions
+
+Use the **Edit Instructions** field to give natural language commands for refining generated content:
+
+```
+Examples:
+- "Change the name Eva to Ela"
+- "Add two more verses"
+- "Rework the chorus to be more upbeat"
+- "Replace all references to rain with sunshine"
+```
+
+The AI applies your edits while preserving the rest of the content. Quoted text remains protected even during edits.
 
 #### Duration-Aware Lyrics
 
@@ -166,9 +195,55 @@ Output:  Description expanded to: "A melancholic piano ballad with introspective
 #### Example 6: Iterative Refinement
 ```
 Round 1: Generate title + lyrics from description
-Round 2: Read lyrics, uncheck lyrics, add specific tags manually
-Round 3: Generate music with your curated combination
+Round 2: Use Edit Instructions: "Make the chorus more energetic"
+Round 3: Tweak tags manually, generate music
+Round 4: Generate 3 batch variants, pick the best one
 ```
+
+---
+
+### Style Transfer (Experimental)
+
+Upload a **reference audio track** to influence the musical style of your generation. HeartMuse uses **MuQ-MuLan** to extract a style embedding from the reference and inject it into the HeartMuLa generation process.
+
+- **Style Strength** slider (0-10x) - control how strongly the reference influences output
+- Runs on **CPU** - no GPU memory impact, works alongside HeartMuLa
+- Supports common audio formats (MP3, WAV, FLAC, etc.)
+
+> Works best with clear, well-produced reference tracks. The model captures high-level style characteristics (genre, mood, instrumentation) rather than copying melodies.
+
+---
+
+### Audio Transcription
+
+The **Transcribe** tab lets you extract lyrics from existing audio recordings using **HeartTranscriptor** (Whisper-based model).
+
+- Upload any audio file and get transcribed lyrics
+- Click **"Send to Generator"** to use transcribed lyrics as a starting point
+- For best results, use **source-separated vocal tracks** (e.g., via [Demucs](https://github.com/facebookresearch/demucs))
+
+> Toggle with `TRANSCRIPTION=true/false` in `.env`
+
+---
+
+### Batch Generation & Reproducibility
+
+- **Batch Variants** (1-10) - generate multiple versions from the same lyrics/tags in one run
+- **Seed Control** - set a specific seed to reproduce exact results, or use `-1` for random
+- **Post-generation Statistics** - view timing breakdown (text gen, style extraction, music gen per variant), GPU peak VRAM, model variant, and seed value
+
+---
+
+### History & Playlist
+
+The **History** tab keeps all your generations organized:
+
+- **Playlist Player** - sequential or shuffle playback with next/prev controls and seeking
+- **History Cards** - title, description, tags, audio player, and generation parameters for each song
+- **Actions** - Load to Generator (reuse settings), Load for Edit (reuse settings + seed), Delete
+- **Pagination** - browse through all past generations, 10 per page
+
+All generations are stored as MP3 + JSON metadata in the `output/` directory.
 
 ---
 
@@ -191,9 +266,22 @@ HeartMuse handles everything:
 - Clones and installs [HeartMuLa library](https://github.com/HeartMuLa/heartlib)
 - Installs all dependencies automatically
 - Downloads models on first use (from Hugging Face)
-- Configures optimal settings for your hardware
 
 ---
+
+## How It Works
+
+```
++------------------+     +------------------+     +------------------+     +------------------+
+|   Your Input     | --> |   LLM (Ollama/   | --> | Style Extraction | --> |   HeartMuLa      |
+|                  |     |   OpenAI)        |     |   (optional)     |     |   Music Gen      |
+|  - Description   |     |                  |     |                  |     |                  |
+|  - Checkboxes    |     |  Generates:      |     |  MuQ-MuLan:      |     |  Creates:        |
+|  - Edit instrs.  |     |  - Title         |     |  Reference audio |     |  - MP3 audio     |
+|  - Ref. audio    |     |  - Lyrics        |     |  -> 512D style   |     |  - Up to 240s    |
+|                  |     |  - Tags          |     |     embedding    |     |  - 1-10 variants |
++------------------+     +------------------+     +------------------+     +------------------+
+```
 
 ## Configuration
 
@@ -203,15 +291,51 @@ Create a `.env` file (or copy `.env.example`):
 # LLM Backend (Ollama = local, OpenAI = cloud)
 LLM_BACKEND=Ollama
 
-# For Ollama
+# Ollama
+OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=glm-4.7-flash
 
-# For OpenAI
+# OpenAI
 # OPENAI_API_KEY=sk-...
+# OPENAI_URL=https://api.openai.com/v1
+# OPENAI_MODEL=gpt-4.1-mini
 
-# Music generation parameters
-MUSIC_MAX_LENGTH_SEC=120
+# LLM generation
+LLM_TEMPERATURE=0.7
+LLM_TIMEOUT=120
+
+# Music generation
+MUSIC_TEMPERATURE=1.0
+MUSIC_CFG_SCALE=1.5
+MUSIC_TOPK=50
+MUSIC_MAX_LENGTH_SEC=240
+MUSIC_NUM_VARIANTS=1
+
+# Model variant: rl (recommended) or base
+MODEL_VARIANT=rl
+
+# Lazy loading - loads models on demand, frees VRAM between stages
+LAZY_LOAD=true
+
+# Features (true/false)
+STYLE_TRANSFER=true
+TRANSCRIPTION=true
+
+# Server
+SERVER_HOST=127.0.0.1
+SERVER_PORT=7860
 ```
+
+All variables are optional - sensible defaults are used when not set.
+
+### Model Variants
+
+| Variant | Description | Config Value |
+|---------|-------------|-------------|
+| **HeartMuLa 3B RL** (Recommended) | RL-trained, better style and tag adherence | `MODEL_VARIANT=rl` |
+| **HeartMuLa 3B** (Base) | Original model | `MODEL_VARIANT=base` |
+
+Switch between variants from the UI dropdown or `.env`. The pipeline automatically reloads when switching.
 
 ### Setting Up Ollama (Recommended)
 
@@ -224,46 +348,38 @@ ollama pull glm-4.7-flash
 ollama serve
 ```
 
-## How It Works
-
-```
-+------------------+     +------------------+     +------------------+
-|   Your Input     | --> |   LLM (Ollama/   | --> |   HeartMuLa      |
-|   + checkboxes   |     |   OpenAI)        |     |   Music Gen      |
-+------------------+     |                  |     |                  |
-                         |  Generates:      |     |  Creates:        |
-                         |  - Title         |     |  - Audio file    |
-                         |  - Lyrics        |     |  - High-quality  |
-                         |  - Tags          |     |    music         |
-                         +------------------+     +------------------+
-```
-
 ## Requirements
 
 - **NVIDIA GPU with 16GB+ VRAM** (e.g., RTX 4080, RTX 3090, RTX 4090)
-- Support for 12GB GPUs is planned
+- CPU fallback available (significantly slower)
+- Style transfer (MuQ-MuLan) runs on CPU and needs ~2.5 GB RAM additionally
 
-## Memory Optimization
+## Memory Management
 
-For GPUs with limited VRAM:
+HeartMuse provides several tools to manage GPU and system memory:
 
-- **Lazy loading** (default) - reduces VRAM footprint
-- **"Unload Model" button** - frees memory between generations
-- **Shorter song length** - reduce `MUSIC_MAX_LENGTH_SEC`
+- **Lazy Loading** (default: on) - loads models on demand and frees VRAM between stages
+- **Unload Buttons** - individually unload Music Pipeline, MuQ Model, Ollama Model, or Transcriptor
+- **Auto-unload Ollama** (default: on) - automatically unloads Ollama model after text generation
+- **Live Memory Monitor** - real-time display of GPU utilization, VRAM usage, and RAM usage (updates every 3 seconds)
+- **Shorter song length** - reduce max duration to lower peak VRAM usage
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| "Out of memory" | Reduce song length, use "Unload Model" |
+| "Out of memory" | Reduce song length, enable lazy loading, use "Unload" buttons |
 | Ollama not connecting | Verify `ollama serve` is running |
-| Models not downloading | Check internet connection |
+| Models not downloading | Check internet connection and Hugging Face access |
+| Style transfer slow | Normal - MuQ-MuLan runs on CPU (~2.5 GB RAM) |
+| Transcription inaccurate | Use source-separated vocal tracks (e.g., Demucs) |
 
 ## Acknowledgments
 
-HeartMuse builds on the excellent work by the **HeartMuLa** team:
-- [HeartMuLa/heartlib](https://github.com/HeartMuLa/heartlib) - Music generation model
-- HeartCodec - High-quality audio codec
+HeartMuse builds on the excellent work by:
+- [HeartMuLa/heartlib](https://github.com/HeartMuLa/heartlib) - Music generation model and HeartCodec audio codec
+- [OpenMuQ/MuQ-MuLan](https://huggingface.co/OpenMuQ/MuQ-MuLan-large) - Music-text alignment model for style transfer
+- [HeartTranscriptor](https://huggingface.co/HeartMuLa/HeartTranscriptor-oss) - Audio transcription model
 
 ## Support the Project
 
