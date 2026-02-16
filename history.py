@@ -66,6 +66,37 @@ def load_history():
     return entries
 
 
+def filter_history(search="", sort="newest"):
+    """Load, filter, and sort history entries.
+
+    Args:
+        search: Case-insensitive substring to match against song_title, tags, lyrics, description.
+        sort: One of "newest", "oldest", "title_az", "title_za".
+    """
+    entries = load_history()  # already sorted newest-first
+    search = search or ""
+
+    if search.strip():
+        q = search.strip().lower()
+        entries = [
+            e for e in entries
+            if q in e.get("song_title", "").lower()
+            or q in e.get("tags", "").lower()
+            or q in e.get("lyrics", "").lower()
+            or q in e.get("description", "").lower()
+        ]
+
+    if sort == "oldest":
+        entries.sort(key=lambda e: e.get("timestamp", ""))
+    elif sort == "title_az":
+        entries.sort(key=lambda e: e.get("song_title", "").lower())
+    elif sort == "title_za":
+        entries.sort(key=lambda e: e.get("song_title", "").lower(), reverse=True)
+    # "newest" is the default from load_history(), no re-sort needed
+
+    return entries
+
+
 def delete_generation(audio_file):
     """Delete a generation's audio and metadata files. Returns True on success."""
     if not audio_file:

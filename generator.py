@@ -116,6 +116,24 @@ def unload_pipeline():
         logger.info("Pipeline unloaded")
 
 
+def ensure_pipeline_loaded(lazy_load=None, model_variant=None):
+    """Pre-load the pipeline and return whether it was a cold load.
+
+    Allows the UI to show a "Loading pipeline..." status before generate_music().
+    """
+    if lazy_load is None:
+        lazy_load = DEFAULT_LAZY_LOAD
+    if model_variant is None:
+        model_variant = DEFAULT_MODEL_VARIANT
+    was_cold = (
+        _pipeline is None
+        or _active_lazy_load != lazy_load
+        or _active_variant != model_variant
+    )
+    get_pipeline(lazy_load=lazy_load, model_variant=model_variant)
+    return was_cold
+
+
 def ensure_models_downloaded(model_variant=None):
     """Download models if not already present."""
     from model_manager import is_ready_for_generation, download_all_models

@@ -14,12 +14,13 @@ from config import (
 )
 from model_manager import is_ready_for_generation
 from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
-from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled, is_generation_cancelled
-from history import generate_output_path, save_generation, load_history, delete_generation
+from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled, is_generation_cancelled, ensure_pipeline_loaded
+from history import generate_output_path, save_generation, load_history, delete_generation, filter_history
 
 logger = logging.getLogger(__name__)
 
 HISTORY_PAGE_SIZE = 10
+_SORT_MAP = {"Newest": "newest", "Oldest": "oldest", "Title A-Z": "title_az", "Title Z-A": "title_za"}
 _JS_SWITCH_TO_GENERATE = "() => document.querySelector('button[role=\"tab\"]').click()"
 
 # Map display labels to internal variant names
@@ -340,6 +341,8 @@ def on_generate_music_only(song_title, description, lyrics, tags,
     style_embedding = None
     t_total_start = time.monotonic()
     t_style = None
+    t_pipeline = 0
+    was_cold = False
     variant_timings = []
 
     yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
@@ -369,6 +372,12 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 yield gr.skip(), _status_html(f"Style extraction failed: {e}", "error"), *_btns_enabled()
                 return
 
+        # Pre-load pipeline so we can show distinct status and time it
+        yield gr.skip(), _status_html("Loading music pipeline...", "progress"), *_btns_disabled()
+        t_pipeline_start = time.monotonic()
+        was_cold = ensure_pipeline_loaded(lazy_load=lazy_load, model_variant=variant_name)
+        t_pipeline = time.monotonic() - t_pipeline_start
+
         title = song_title.strip() or "Untitled"
         completed = []  # list of (abs_path, filename) tuples
 
@@ -389,9 +398,9 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 return
 
             if num_variants > 1:
-                status_msg = f"Generating variant {i + 1} of {num_variants}..."
+                status_msg = f"Generating audio — variant {i + 1} of {num_variants} (this may take a while)..."
             else:
-                status_msg = "Generating music (this may take a while)..."
+                status_msg = "Generating audio (this may take a while)..."
             audio_update = _build_variants_html(completed, autoplay=False) if completed else gr.skip()
             yield audio_update, _status_html(status_msg, "progress"), *_btns_disabled()
 
@@ -443,10 +452,12 @@ def on_generate_music_only(song_title, description, lyrics, tags,
 
                 # Build stats
                 timings = []
+                if was_cold and t_pipeline > 1.0:
+                    timings.append(("Pipeline loading", t_pipeline))
                 if t_style is not None:
                     timings.append(("Style extraction", t_style))
                 for vi, vt in enumerate(variant_timings):
-                    label = f"Music generation (variant {vi + 1})" if num_variants > 1 else "Music generation"
+                    label = f"Audio generation (variant {vi + 1})" if num_variants > 1 else "Audio generation"
                     timings.append((label, vt))
                 timings.append(("Total", t_total))
 
@@ -1126,6 +1137,18 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         history_page = gr.State(value=0)
         playlist_player = gr.HTML(value="")
         history_status = gr.HTML(value="")
+        with gr.Row():
+            history_search = gr.Textbox(
+                label="Search",
+                placeholder="Search by title, tags, lyrics, description...",
+                scale=3,
+            )
+            history_sort = gr.Dropdown(
+                choices=["Newest", "Oldest", "Title A-Z", "Title Z-A"],
+                value="Newest",
+                label="Sort by",
+                scale=1,
+            )
         page_info = gr.HTML(value="")
 
         # Fixed card slots (avoids @gr.render and its stale-handler bugs)
@@ -1192,17 +1215,22 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
             updates.append(page)
             return updates
 
-        def _refresh_history(page):
+        def _refresh_history(page, search="", sort="Newest"):
             """Full refresh: playlist player + all card slots."""
             page = int(page or 0)
-            entries = load_history()
+            entries = filter_history(search=search, sort=_SORT_MAP.get(sort, "newest"))
             return [_build_playlist_html(entries)] + _build_cards(page, entries)
 
-        def _refresh_cards_only(page):
+        def _refresh_cards_only(page, search="", sort="Newest"):
             """Cards-only refresh for page navigation (keeps playlist playing)."""
             page = int(page or 0)
-            entries = load_history()
+            entries = filter_history(search=search, sort=_SORT_MAP.get(sort, "newest"))
             return _build_cards(page, entries)
+
+        def _on_search_change(search, sort):
+            """Reset to page 0 and do full refresh when search/sort changes."""
+            entries = filter_history(search=search, sort=_SORT_MAP.get(sort, "newest"))
+            return [_build_playlist_html(entries)] + _build_cards(0, entries)
 
         # Wire up load handlers (read entry data from per-slot State)
         def _slot_load(state):
@@ -1256,25 +1284,30 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
                 [history_page, history_status],
                 js="(...args) => { if (!confirm('Are you sure you want to delete this song?')) throw new Error('cancelled'); return args; }",
             ).then(
-                _refresh_history, [history_page], _refresh_outputs,
+                _refresh_history, [history_page, history_search, history_sort], _refresh_outputs,
             )
 
         # Navigation
         def _go_prev(page):
             return max(0, int(page or 0) - 1)
-        def _go_next(page):
+        def _go_next(page, search="", sort="Newest"):
             page = int(page or 0)
-            total = len(load_history())
+            total = len(filter_history(search=search, sort=_SORT_MAP.get(sort, "newest")))
             max_page = max(0, (total - 1) // HISTORY_PAGE_SIZE)
             return min(max_page, page + 1)
 
         prev_btn.click(_go_prev, [history_page], [history_page]).then(
-            _refresh_cards_only, [history_page], _card_outputs)
-        next_btn.click(_go_next, [history_page], [history_page]).then(
-            _refresh_cards_only, [history_page], _card_outputs)
+            _refresh_cards_only, [history_page, history_search, history_sort], _card_outputs)
+        next_btn.click(_go_next, [history_page, history_search, history_sort], [history_page]).then(
+            _refresh_cards_only, [history_page, history_search, history_sort], _card_outputs)
+
+        # Search and sort
+        _search_sort_inputs = [history_search, history_sort]
+        history_search.submit(_on_search_change, _search_sort_inputs, _refresh_outputs)
+        history_sort.change(_on_search_change, _search_sort_inputs, _refresh_outputs)
 
         # Refresh when switching to this tab
-        history_tab.select(_refresh_history, [history_page], _refresh_outputs)
+        history_tab.select(_refresh_history, [history_page, history_search, history_sort], _refresh_outputs)
 
 
 if __name__ == "__main__":
