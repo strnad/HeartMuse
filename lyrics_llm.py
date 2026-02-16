@@ -129,8 +129,49 @@ _FIELD_PATTERNS = {
 }
 
 
+_TAG_ALIASES = {
+    "hip hop": "hiphop",
+    "hip-hop": "hiphop",
+    "r and b": "r&b",
+    "rnb": "r&b",
+    "rhythm and blues": "r&b",
+    "k pop": "k-pop",
+    "kpop": "k-pop",
+    "j pop": "j-pop",
+    "jpop": "j-pop",
+    "synth pop": "synth-pop",
+    "dream-pop": "dream pop",
+    "drum": "drums",
+    "guitar": "acoustic guitar",
+    "vocal harmony": "female",
+    "choir": "female",
+    "male voice": "male",
+    "female voice": "female",
+    "male vocal": "male",
+    "female vocal": "female",
+    "male vocals": "male",
+    "female vocals": "female",
+    "rap vocal": "rap",
+}
+
+_GENRE_TAGS = {
+    "pop", "rock", "electronic", "hiphop", "jazz", "classical", "techno",
+    "trance", "ambient", "r&b", "soul", "funk", "country", "blues", "folk",
+    "reggae", "disco", "house", "metal", "punk", "indie", "rap", "latin",
+    "dance", "hard rock", "heavy metal", "synth-pop", "dream pop",
+    "progressive rock", "grunge", "new wave", "shoegaze", "trip-hop",
+    "dubstep", "trap", "boom bap", "neo-soul", "afrobeat",
+}
+
+_MAX_TAGS = 8
+
+
 def _normalize_tags(tags_str: str) -> str:
-    """Normalize comma-separated tags: lowercase, trim, deduplicate, remove empties."""
+    """Normalize, validate, and fix comma-separated tags.
+
+    Steps: lowercase/trim/dedup, apply aliases, enforce single genre, cap count.
+    """
+    # Step 1: Basic normalization
     tags = [t.strip().lower() for t in tags_str.split(",")]
     seen = set()
     result = []
@@ -138,6 +179,29 @@ def _normalize_tags(tags_str: str) -> str:
         if tag and tag not in seen:
             seen.add(tag)
             result.append(tag)
+
+    # Step 2: Apply aliases
+    result = [_TAG_ALIASES.get(tag, tag) for tag in result]
+    seen = set()
+    deduped = []
+    for tag in result:
+        if tag not in seen:
+            seen.add(tag)
+            deduped.append(tag)
+    result = deduped
+
+    # Step 3: Enforce single genre (keep first, remove extras)
+    genres_found = [t for t in result if t in _GENRE_TAGS]
+    if len(genres_found) > 1:
+        first_genre = genres_found[0]
+        result = [t for t in result if t not in _GENRE_TAGS or t == first_genre]
+        logger.info("Multiple genres detected %s, keeping '%s'", genres_found, first_genre)
+
+    # Step 4: Cap at max tags
+    if len(result) > _MAX_TAGS:
+        logger.info("Too many tags (%d), trimming to %d", len(result), _MAX_TAGS)
+        result = result[:_MAX_TAGS]
+
     return ",".join(result)
 
 

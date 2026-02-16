@@ -38,16 +38,22 @@ CRITICAL PRESERVATION RULES for existing lyrics:
 3. Only add new sections or extend existing ones. Never completely remove or rewrite the provided text.
 IMPORTANT: When writing or editing lyrics, convert any uppercase abbreviations to dotted form (e.g., "AI" -> "A.I.", "FBI" -> "F.B.I.", "IT" -> "I.T.", "USB" -> "U.S.B.") so they are pronounced letter by letter.""",
 
-        "tags": """For tags, use comma-separated MUSIC PRODUCTION tags ONLY. Each tag is a single word or a short multi-word phrase. Use 5-15 tags total. Choose from these categories:
-- Genre/subgenre: pop, rock, jazz, classical, electronic, blues, country, funk, reggae, hip-hop, rap, indie, folk, soul, r&b, latin, dance, disco, techno, house, ambient, hard rock, progressive rock, dream pop, synth-pop, bossa nova, grunge, punk, new wave, shoegaze, trip-hop, dubstep, trap, boom bap, neo-soul, afrobeat, kpop, jpop
-- Mood/emotion: happy, sad, romantic, energetic, calm, peaceful, melancholic, upbeat, chill, dark, bright, dreamy, aggressive, gentle, intense, relaxing, cheerful, nostalgic, dramatic, playful, euphoric, haunting, bittersweet
-- Instruments: piano, guitar, bass, drum, violin, saxophone, trumpet, flute, organ, synthesizer, acoustic guitar, electric guitar, cello, harp, strings, brass, harmonica, banjo, mandolin, sitar, tabla, ukulele, accordion, turntable
-- Vocal style: male, female, child voice, deep voice, soft voice, whisper, falsetto, growl, breathy, choir, vocal harmony, rap vocal, duet (MUST match the song description)
-- Era/decade: 60s, 70s, 80s, 90s, 2000s, modern, retro, vintage
-- Production: lo-fi, hi-fi, raw, polished, distorted, clean, reverb, compressed
-- Scene/occasion: wedding, party, workout, meditation, study, driving, lullaby
-- Tempo/energy: fast, slow, medium tempo, groovy, driving, flowing, bouncy, acoustic, orchestral, cinematic, atmospheric, minimal
-Do NOT include content/story/character/theme tags (e.g. no "love", "heartbreak", "summer" as tags). Focus strictly on how the music SOUNDS, not what it is about.
+        "tags": """For tags, generate 4-8 comma-separated music tags. Pick from these categories IN PRIORITY ORDER:
+
+1. GENRE (REQUIRED — pick exactly ONE): pop, rock, electronic, hiphop, jazz, classical, techno, trance, ambient, r&b, soul, funk, country, blues, folk, reggae, disco, house, metal, punk, indie, rap, latin, dance
+2. TIMBRE (pick 0-1): soft, warm, husky, bright, dark, distorted, clear, sweet, smooth, powerful, raspy, deep, breathy
+3. GENDER (pick 0-1): male, female
+4. MOOD (pick 0-1): happy, sad, energetic, joyful, melancholic, relaxing, dark, calm, chill, dreamy, aggressive, nostalgic, romantic, dramatic, playful, intense, cheerful, peaceful, upbeat
+5. INSTRUMENT (pick 0-2): piano, synthesizer, acoustic guitar, electric guitar, bass, drums, strings, violin, keyboard, organ, saxophone, trumpet, flute, cello, harp, harmonica, banjo, ukulele, accordion
+6. SCENE (pick 0-1): dance, workout, dating, study, cinematic, party, meditation, driving, wedding, club, cafe, night
+7. REGION (pick 0-1): k-pop, latin, western, j-pop
+8. TOPIC (pick 0-1): love, summer, heartbreak, loneliness, youth, nature, freedom
+
+CRITICAL RULES:
+- Pick EXACTLY ONE genre. Multiple genres (e.g. "rock,jazz,electronic") confuse the model — use only one.
+- Total: 4-8 tags. Fewer focused tags work much better than many vague ones.
+- Do NOT invent tags outside the examples above.
+- Do NOT include narrative/character tags (e.g. no "storytelling", "comedy", "desperate").
 Format: lowercase,no spaces around commas,like this""",
     }
 

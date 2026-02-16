@@ -914,8 +914,9 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
 
                 with gr.Row():
                     tags_box = gr.Textbox(
-                        label="Tags (comma-separated)",
-                        placeholder="pop,female,piano,dreamy,80s,lo-fi,chill,slow",
+                        label="Tags (comma-separated, 4-8 tags)",
+                        placeholder="electronic,warm,female,energetic,synthesizer,dance",
+                        info="Genre (required) + optional: timbre, gender, mood, instrument, scene, region, topic",
                         scale=4,
                     )
                     gen_tags_cb = gr.Checkbox(value=True, label="Auto-generate", scale=1)
