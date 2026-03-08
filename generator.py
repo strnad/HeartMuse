@@ -50,7 +50,7 @@ def get_pipeline(lazy_load=False, model_variant=None):
     if model_variant is None:
         model_variant = DEFAULT_MODEL_VARIANT
 
-    variant = MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS["rl"])
+    variant = MODEL_VARIANTS.get(model_variant, MODEL_VARIANTS["hny"])
 
     with _pipeline_lock:
         if _pipeline is not None and (_active_lazy_load != lazy_load or _active_variant != model_variant):

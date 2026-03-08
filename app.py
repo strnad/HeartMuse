@@ -30,12 +30,12 @@ _VARIANT_LABEL_TO_NAME = {v: k for k, v in MODEL_VARIANT_LABELS.items()}
 
 def _variant_name_from_label(label):
     """Convert dropdown label to internal variant name."""
-    return _VARIANT_LABEL_TO_NAME.get(label, "rl")
+    return _VARIANT_LABEL_TO_NAME.get(label, "hny")
 
 
 def _variant_label_from_name(name):
     """Convert internal variant name to dropdown label."""
-    return MODEL_VARIANT_LABELS.get(name, "HeartMuLa 3B RL (Recommended)")
+    return MODEL_VARIANT_LABELS.get(name, "HeartMuLa 3B HNY (Recommended)")
 
 
 def on_list_ollama(ollama_url):

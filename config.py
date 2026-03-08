@@ -38,6 +38,12 @@ HEARTMULGEN_FILES = ["tokenizer.json", "gen_config.json"]
 # The "version" string is passed to heartlib's from_pretrained() which constructs
 # the model path as: CKPT_DIR/HeartMuLa-oss-{version}/
 MODEL_VARIANTS = {
+    "hny": {
+        "name": "HeartMuLa 3B HNY",
+        "repo_id": "HeartMuLa/HeartMuLa-oss-3B-happy-new-year",
+        "local_dir": "HeartMuLa-oss-3B-happy-new-year",
+        "version": "3B-happy-new-year",
+    },
     "rl": {
         "name": "HeartMuLa 3B RL",
         "repo_id": "HeartMuLa/HeartMuLa-RL-oss-3B-20260123",
@@ -59,11 +65,12 @@ CODEC_MODEL = {
 }
 
 MODEL_VARIANT_LABELS = {
-    "rl": "HeartMuLa 3B RL (Recommended)",
+    "hny": "HeartMuLa 3B HNY (Recommended)",
+    "rl": "HeartMuLa 3B RL",
     "base": "HeartMuLa 3B (Base)",
 }
 
-DEFAULT_MODEL_VARIANT = os.environ.get("MODEL_VARIANT", "rl")
+DEFAULT_MODEL_VARIANT = os.environ.get("MODEL_VARIANT", "hny")
 
 DEFAULT_GENERATION_PARAMS = {
     "temperature": _env_float("MUSIC_TEMPERATURE", "1.0"),

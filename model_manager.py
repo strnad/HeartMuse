@@ -53,7 +53,7 @@ def is_ready_for_generation(variant=None):
             return False
 
     # Check variant model + codec
-    v = MODEL_VARIANTS.get(variant, MODEL_VARIANTS["rl"])
+    v = MODEL_VARIANTS.get(variant, MODEL_VARIANTS["hny"])
     if not _is_model_downloaded(v["local_dir"]):
         return False
     if not _is_model_downloaded(CODEC_MODEL["local_dir"]):
@@ -73,7 +73,7 @@ def download_all_models(variant=None):
 
     ensure_gen_config()
 
-    v = MODEL_VARIANTS.get(variant, MODEL_VARIANTS["rl"])
+    v = MODEL_VARIANTS.get(variant, MODEL_VARIANTS["hny"])
     results = []
 
     # Download variant model
