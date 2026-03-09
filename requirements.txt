@@ -5,3 +5,4 @@ python-dotenv>=1.0,<2.0
 huggingface_hub>=0.20,<1.0
 librosa>=0.10,<1.0
 muq>=0.1
+torchcodec>=0.1
