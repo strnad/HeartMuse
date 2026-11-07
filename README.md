@@ -34,6 +34,7 @@ Open **http://localhost:7860** and start creating!
 
 - **Smart Text Generation** - AI writes lyrics, titles, tags, and descriptions via Ollama (local) or OpenAI
 - **HeartMuLa Music Generation** - two model variants (RL and Base), up to 240s songs
+- **Fast Generation** - optimized HeartMuLa decoding, ~2.8x faster than stock heartlib (~5x realtime on an RTX 3090 Ti)
 - **Style Transfer** - upload reference audio to influence the musical style (MuQ-MuLan)
 - **Audio Transcription** - extract lyrics from existing audio (HeartTranscriptor)
 - **Batch Variants** - generate 1-10 variations of the same song in one go
@@ -235,7 +236,7 @@ The **Transcribe** tab lets you extract lyrics from existing audio recordings us
 ### Batch Generation & Reproducibility
 
 - **Batch Variants** (1-10) - generate multiple versions from the same lyrics/tags in one run
-- **Seed Control** - set a specific seed to reproduce exact results, or use `-1` for random
+- **Seed Control** - set a specific seed to reproduce exact results, or use `-1` for random. Results are reproducible with the same HeartMuse version and settings; seeds from versions before the generation speedups, or with `TRITON_KERNELS` switched, produce a different song
 - **Post-generation Statistics** - view timing breakdown (text gen, style extraction, music gen per variant), GPU peak VRAM, model variant, and seed value
 
 ---
@@ -359,7 +360,7 @@ ollama serve
 
 ## Requirements
 
-- **NVIDIA GPU with 16GB+ VRAM** (e.g., RTX 4080, RTX 3090, RTX 4090)
+- **NVIDIA GPU with 16GB+ VRAM** (e.g., RTX 4080, RTX 3090, RTX 4090). With lazy loading, peak usage is ~10 GB even for 240s songs, so 12GB cards may work (untested)
 - CPU fallback available (significantly slower)
 - Style transfer (MuQ-MuLan) runs on CPU and needs ~2.5 GB RAM additionally
 
@@ -373,6 +374,22 @@ HeartMuse provides several tools to manage GPU and system memory:
 - **Live Memory Monitor** - real-time display of GPU utilization, VRAM usage, and RAM usage (updates every 3 seconds)
 - **Shorter song length** - reduce max duration to lower peak VRAM usage
 
+## Performance
+
+Music generation produces one 80 ms audio frame per step, which stock heartlib/torchtune handle inefficiently. `fast_decode.py` patches torchtune at runtime (heartlib itself is untouched):
+
+- **CUDA graphs** - each frame is replayed as one graph instead of thousands of individual kernel launches
+- **Leaner attention** - KV cache stores only the 8 key/value heads (3x less VRAM), attention reads only the filled part of the cache
+- **Fewer, fused kernels** - fused projection weights, cheaper RMSNorm/RoPE, and optionally fused Triton kernels via `torch.compile`
+
+| 4 min song, frame generation on RTX 3090 Ti | Time |
+|---|---|
+| Stock heartlib | ~132 s |
+| HeartMuse, `TRITON_KERNELS=false` | ~49 s |
+| HeartMuse, `TRITON_KERNELS=true` | ~46 s |
+
+`TRITON_KERNELS` is on by default except on Windows, where Triton usually isn't available. The first generation after start compiles the kernels for a few seconds; if compiling fails, HeartMuse falls back to regular kernels automatically.
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -381,6 +398,7 @@ HeartMuse provides several tools to manage GPU and system memory:
 | Ollama not connecting | Verify `ollama serve` is running |
 | Models not downloading | Check internet connection and Hugging Face access |
 | Style transfer slow | Normal - MuQ-MuLan runs on CPU (~2.5 GB RAM) |
+| `torch.compile` / Triton errors in the log | Generation falls back to regular kernels; set `TRITON_KERNELS=false` to skip compiling |
 | Transcription inaccurate | Use source-separated vocal tracks (e.g., Demucs) |
 
 ## Acknowledgments
