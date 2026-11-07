@@ -39,6 +39,105 @@ def is_generation_cancelled():
     return _cancel_event.is_set()
 
 
+def _patch_kv_cache_sync():
+    """Remove GPU->CPU syncs from torchtune's KVCache.
+
+    torchtune's update() asserts on a CUDA tensor and reset() calls .item(),
+    each forcing a sync in every attention layer (~50x per audio frame). The
+    CPU then waits for the GPU to drain before queueing the next kernels, so
+    neither is fully utilized. Results are bit-identical without the syncs.
+    """
+    from torchtune.modules.kv_cache import KVCache
+    if getattr(KVCache, "_heartmuse_nosync", False):
+        return
+
+    def update(self, k_val, v_val):
+        bsz, _, seq_len, _ = k_val.shape
+        if bsz > self.k_cache.shape[0]:
+            raise ValueError(
+                f"The current cache has been setup with a batch size of {self.k_cache.shape[0]}"
+                f", but found new key tensors with batch size {k_val.shape[0]}!"
+            )
+        k_out = self.k_cache
+        v_out = self.v_cache
+        k_out[:, :, self.cache_pos[:seq_len]] = k_val
+        v_out[:, :, self.cache_pos[:seq_len]] = v_val
+        self.cache_pos += seq_len
+        return k_out, v_out
+
+    def reset(self):
+        self.k_cache.zero_()
+        self.v_cache.zero_()
+        self.cache_pos.sub_(self.cache_pos[0].clone())
+
+    KVCache.update = update
+    KVCache.reset = reset
+    KVCache._heartmuse_nosync = True
+
+
+class _GraphedFrameStep:
+    """Replay single-frame generate_frame() calls from a captured CUDA graph.
+
+    One audio frame launches ~1000 small kernels (backbone + 7 decoder passes
+    at batch 2, seq len 1). The GPU runs them faster than one Python thread can
+    issue them, so it sits half idle. A graph replay issues the whole frame at
+    once. The prompt frame (variable length) always runs eagerly; the first
+    single-frame calls run eagerly as warmup, then the graph is captured.
+
+    The graph reads buffers that setup_caches() reallocates, so it is only
+    valid for one generation: create a new instance per pipeline call.
+    """
+    WARMUP_CALLS = 2
+
+    def __init__(self, generate_frame):
+        self._generate_frame = generate_frame
+        self._calls = 0
+        self._disabled = False
+        self._graph = None
+        self._static = None
+        self._out = None
+
+    def __call__(self, model, **kwargs):
+        tokens = kwargs["tokens"]
+        if (self._disabled or not tokens.is_cuda or tokens.shape[1] != 1
+                or kwargs.get("continuous_segments") is not None):
+            return self._generate_frame(model, **kwargs)
+        if self._graph is None:
+            self._calls += 1
+            if self._calls <= self.WARMUP_CALLS:
+                return self._generate_frame(model, **kwargs)
+            try:
+                self._capture(model, kwargs)
+            except Exception:
+                logger.warning("CUDA graph capture failed, continuing without it", exc_info=True)
+                self.release()
+                self._disabled = True
+                return self._generate_frame(model, **kwargs)
+        for name, buf in self._static.items():
+            buf.copy_(kwargs[name])
+        self._graph.replay()
+        return self._out.clone()
+
+    def _capture(self, model, kwargs):
+        self._static = {name: kwargs[name].clone()
+                        for name in ("tokens", "tokens_mask", "input_pos")}
+        params = {k: v for k, v in kwargs.items() if k not in self._static}
+        graph = torch.cuda.CUDAGraph()
+        # Mirror the caller's autocast, but without the cast cache, which must
+        # not be used during capture.
+        with torch.cuda.graph(graph, capture_error_mode="thread_local"), \
+                torch.autocast("cuda", dtype=torch.get_autocast_dtype("cuda"),
+                               enabled=torch.is_autocast_enabled("cuda"),
+                               cache_enabled=False):
+            self._out = self._generate_frame(model, **self._static, **params)
+        self._graph = graph
+
+    def release(self):
+        self._graph = None
+        self._static = None
+        self._out = None
+
+
 def get_pipeline(lazy_load=False, model_variant=None):
     """Get or initialize the HeartMuLa pipeline.
 
@@ -192,15 +291,16 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
         # _unload() can actually free the model from VRAM between stages.
         # Strong references (bound methods, local vars) would prevent GC.
         _mula_ref = weakref.ref(mula_model)
-        _orig_generate_frame = type(mula_model).generate_frame
+        _patch_kv_cache_sync()  # graph capture requires sync-free KV caches
+        graph_step = _GraphedFrameStep(type(mula_model).generate_frame)
 
-        def cancellable_generate_frame(*args, **kwargs):
+        def cancellable_generate_frame(**kwargs):
             if _cancel_event.is_set():
                 raise GenerationCancelled()
             model = _mula_ref()
             if model is None:
                 raise GenerationCancelled()
-            return _orig_generate_frame(model, *args, **kwargs)
+            return graph_step(model, **kwargs)
 
         mula_model.generate_frame = cancellable_generate_frame
         del mula_model  # release strong reference; only pipe._mula remains
@@ -226,6 +326,7 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
             _force_gpu_cleanup()
             raise
         finally:
+            graph_step.release()
             model = _mula_ref()
             if model is not None and 'generate_frame' in model.__dict__:
                 del model.generate_frame
