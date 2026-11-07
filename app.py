@@ -4,6 +4,7 @@ import os
 import time
 import warnings
 import html as html_mod
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import gradio as gr
 from config import (
     DEFAULT_GENERATION_PARAMS, DEFAULT_OLLAMA_URL, DEFAULT_OLLAMA_MODEL,
@@ -16,6 +17,7 @@ from config import (
 from model_manager import is_ready_for_generation
 from lyrics_llm import generate_checked_fields, unload_ollama_model, list_ollama_models
 from generator import generate_music, unload_pipeline, cancel_generation, GenerationCancelled, is_generation_cancelled, ensure_pipeline_loaded
+from fast_decode import triton_kernels_active
 from history import generate_output_path, save_generation, load_history, delete_generation, filter_history
 
 logger = logging.getLogger(__name__)
@@ -72,8 +74,12 @@ def _btns_enabled():
     return gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)
 
 
-def _status_html(message, style="info", stats_html=""):
-    """Return styled HTML for status messages with optional progress bar and stats."""
+def _status_html(message, style="info", stats_html="", fraction=None):
+    """Return styled HTML for status messages with optional progress bar and stats.
+
+    With style="progress", the bar shows `fraction` (0-1) when given, and an
+    indeterminate animation otherwise.
+    """
     message = html_mod.escape(str(message))
     colors = {
         "info": ("#1a3a5c", "#3b82f6", "#e0f2fe"),
@@ -84,16 +90,24 @@ def _status_html(message, style="info", stats_html=""):
     bg, border, text_bg = colors.get(style, colors["info"])
 
     progress_bar = ""
-    if style == "progress":
+    if style == "progress" and fraction is not None:
+        progress_bar = f"""
+        <div style="width:100%;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-top:8px;">
+          <div style="width:{fraction * 100:.1f}%;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:2px;"></div>
+        </div>"""
+    elif style == "progress":
+        # Animate transform only: margin/width would re-layout the page every
+        # frame for the whole generation; transforms run on the compositor.
+        # translateX % is relative to the bar's own 30 % width.
         progress_bar = """
         <div style="width:100%;height:4px;background:#1e293b;border-radius:2px;overflow:hidden;margin-top:8px;">
-          <div style="width:30%;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:2px;animation:progress-slide 1.5s ease-in-out infinite;"></div>
+          <div style="width:30%;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:2px;transform-origin:left;will-change:transform;animation:progress-slide 1.5s ease-in-out infinite;"></div>
         </div>
         <style>
           @keyframes progress-slide {
-            0% { margin-left: 0%; width: 30%; }
-            50% { margin-left: 35%; width: 40%; }
-            100% { margin-left: 70%; width: 30%; }
+            0% { transform: translateX(0) scaleX(1); }
+            50% { transform: translateX(117%) scaleX(1.333); }
+            100% { transform: translateX(233%) scaleX(1); }
           }
         </style>"""
 
@@ -241,23 +255,80 @@ def _get_live_memory_html():
     )
 
 
+def _format_duration(seconds):
+    seconds = int(round(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+FRAME_SEC = 0.08  # HeartMuLa generates one 80 ms audio frame per step
+
+
+def _generation_progress_html(label, progress, t_submit):
+    """Status block with the live progress of a generate_music() call."""
+    now = time.monotonic()
+    phase = progress.get("phase", "loading")
+    elapsed = _format_duration(now - progress.get("t_start", t_submit))
+    if phase == "generating":
+        frames, max_frames = progress["frames"], max(progress["max_frames"], 1)
+        fraction = min(frames / max_frames, 1.0)
+        gen_time = now - progress["t_frames"]
+        fps = frames / gen_time if gen_time > 0 else 0
+        parts = [
+            f"{fraction:.0%}",
+            f"{_format_duration(frames * FRAME_SEC)} of max {_format_duration(max_frames * FRAME_SEC)} audio",
+            f"{fps:.0f} frames/s ({fps * FRAME_SEC:.1f}x realtime)",
+            f"elapsed {elapsed}",
+        ]
+        if fps > 0:
+            # Upper bound: the model may end the song before max length
+            parts.append(f"at most {_format_duration((max_frames - frames) / fps)} left")
+        detail = " · ".join(parts)
+    elif phase in ("decoding", "done"):
+        fraction = 1.0
+        detail = f"Decoding audio · elapsed {elapsed}"
+    else:
+        fraction = 0.0
+        detail = f"Loading model · elapsed {elapsed}"
+    detail_html = (f'<div style="margin-top:6px;font-size:0.85em;color:#94a3b8;">'
+                   f'{html_mod.escape(detail)}</div>')
+    return _status_html(label, "progress", stats_html=detail_html, fraction=fraction)
+
+
+def _generation_stats(progress, suffix=""):
+    """Timing rows and detail rows for one finished generate_music() call."""
+    timings, details = [], []
+    if "t_frames" in progress:
+        timings.append((f"  Model loading{suffix}", progress["t_frames"] - progress["t_start"]))
+    if "t_decode" in progress:
+        gen_time = progress["t_decode"] - progress["t_frames"]
+        timings.append((f"  Frame generation{suffix}", gen_time))
+        audio_frames = progress["audio_frames"]
+        ending = "song ended" if audio_frames < progress["max_frames"] else "max length reached"
+        details.append((f"Audio length{suffix}", f"{_format_duration(audio_frames * FRAME_SEC)} ({ending})"))
+        fps = progress["frames"] / gen_time if gen_time > 0 else 0
+        details.append((f"Speed{suffix}", f"{fps:.1f} frames/s ({fps * FRAME_SEC:.1f}x realtime)"))
+    if "t_end" in progress:
+        timings.append((f"  Audio decoding{suffix}", progress["t_end"] - progress["t_decode"]))
+    return timings, details
+
+
 def _format_stats_html(timings=None, mem_stats=None, extra_info=None):
     """Format generation statistics as a collapsible HTML details block."""
     rows = []
+    heading = '<b style="color:#cbd5e1;">{}</b>'.format
     if timings:
-        rows.append("<b>Timing</b>")
+        rows.append(heading("Timing"))
         for label, seconds in timings:
             rows.append(f"  {html_mod.escape(label)}: {seconds:.1f}s")
-    if mem_stats:
-        rows.append("<b>Memory</b>")
-        if "gpu_name" in mem_stats:
-            rows.append(f"  GPU: {html_mod.escape(mem_stats['gpu_name'])}")
+    if mem_stats and "gpu_name" in mem_stats:
+        rows.append(heading("Memory"))
+        rows.append(f"  GPU: {html_mod.escape(mem_stats['gpu_name'])}")
         if "gpu_peak_mb" in mem_stats:
             peak = mem_stats["gpu_peak_mb"]
             total = mem_stats.get("gpu_total_mb", 0)
             rows.append(f"  VRAM Peak: {peak:,.0f} / {total:,.0f} MB")
     if extra_info:
-        rows.append("<b>Details</b>")
+        rows.append(heading("Details"))
         for label, value in extra_info:
             rows.append(f"  {html_mod.escape(label)}: {html_mod.escape(str(value))}")
     if not rows:
@@ -349,6 +420,12 @@ def on_generate_music_only(song_title, description, lyrics, tags,
     t_pipeline = 0
     was_cold = False
     variant_timings = []
+    variant_progress = []
+    completed = []  # list of (abs_path, filename) tuples
+    # generate_music() runs in a worker so this handler can report progress
+    # meanwhile. The worker also saves the history entry, so a variant that
+    # is running when the page is closed still ends up in history.
+    executor = ThreadPoolExecutor(max_workers=1)
 
     yield gr.skip(), _status_html("Checking models...", "progress"), *_btns_disabled()
 
@@ -384,34 +461,8 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         t_pipeline = time.monotonic() - t_pipeline_start
 
         title = song_title.strip() or "Untitled"
-        completed = []  # list of (abs_path, filename) tuples
 
-        # Reset peak memory tracking before generation loop
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.reset_peak_memory_stats()
-        except Exception:
-            pass
-
-        for i in range(num_variants):
-            # Check cancellation between variants
-            if i > 0 and is_generation_cancelled():
-                yield _build_variants_html(completed, autoplay), \
-                      _status_html(f"Cancelled after {len(completed)} of {num_variants} variants.", "info"), \
-                      *_btns_enabled()
-                return
-
-            if num_variants > 1:
-                status_msg = f"Generating audio — variant {i + 1} of {num_variants} (this may take a while)..."
-            else:
-                status_msg = "Generating audio (this may take a while)..."
-            audio_update = _build_variants_html(completed, autoplay=False) if completed else gr.skip()
-            yield audio_update, _status_html(status_msg, "progress"), *_btns_disabled()
-
-            output_path = generate_output_path(title)
-            variant_seed = (seed_val + i) if seed_val is not None else None
-            t_var_start = time.monotonic()
+        def generate_variant(i, progress):
             path, used_seed = generate_music(
                 lyrics=lyrics,
                 tags=tags,
@@ -419,14 +470,13 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 cfg_scale=cfg_scale,
                 topk=topk,
                 max_audio_length_ms=int(max_length_sec * 1000),
-                output_path=output_path,
+                output_path=generate_output_path(title),
                 lazy_load=lazy_load,
                 model_variant=variant_name,
                 style_embedding=style_embedding,
-                seed=variant_seed,
+                seed=(seed_val + i) if seed_val is not None else None,
+                progress=progress,
             )
-            variant_timings.append(time.monotonic() - t_var_start)
-
             params = {
                 "temperature": temperature,
                 "cfg_scale": cfg_scale,
@@ -449,6 +499,44 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                 params=params,
                 audio_path=path,
             )
+            return path, used_seed
+
+        # Reset peak memory tracking before generation loop
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+
+        for i in range(num_variants):
+            # Check cancellation between variants
+            if i > 0 and is_generation_cancelled():
+                yield _build_variants_html(completed, autoplay), \
+                      _status_html(f"Cancelled after {len(completed)} of {num_variants} variants.", "info"), \
+                      *_btns_enabled()
+                return
+
+            if num_variants > 1:
+                status_msg = f"Generating audio — variant {i + 1} of {num_variants}"
+            else:
+                status_msg = "Generating audio"
+            t_var_start = time.monotonic()
+            progress = {}
+            future = executor.submit(generate_variant, i, progress)
+            audio_update = _build_variants_html(completed, autoplay=False) if completed else gr.skip()
+            yield audio_update, _generation_progress_html(status_msg, progress, t_var_start), *_btns_disabled()
+            while True:
+                try:
+                    path, used_seed = future.result(timeout=1.0)
+                    break
+                except FutureTimeout:
+                    # Update the status only; re-sending the players would
+                    # restart playback of finished variants
+                    yield gr.skip(), _generation_progress_html(status_msg, progress, t_var_start), \
+                          gr.skip(), gr.skip(), gr.skip()
+            variant_timings.append(time.monotonic() - t_var_start)
+            variant_progress.append(progress)
             completed.append((path, os.path.basename(path)))
 
             is_last = i == num_variants - 1
@@ -461,9 +549,13 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                     timings.append(("Pipeline loading", t_pipeline))
                 if t_style is not None:
                     timings.append(("Style extraction", t_style))
-                for vi, vt in enumerate(variant_timings):
-                    label = f"Audio generation (variant {vi + 1})" if num_variants > 1 else "Audio generation"
-                    timings.append((label, vt))
+                gen_details = []
+                for vi, (vt, vp) in enumerate(zip(variant_timings, variant_progress)):
+                    suffix = f" (variant {vi + 1})" if num_variants > 1 else ""
+                    timings.append((f"Audio generation{suffix}", vt))
+                    phase_timings, details = _generation_stats(vp, suffix)
+                    timings += phase_timings
+                    gen_details += details
                 timings.append(("Total", t_total))
 
                 mem_stats = _read_memory_stats()
@@ -472,7 +564,12 @@ def on_generate_music_only(song_title, description, lyrics, tags,
                     device_str = "CUDA" if torch.cuda.is_available() else "CPU"
                 except Exception:
                     device_str = "CPU"
-                extra = [("Model", variant_name), ("Device", device_str), ("Seed", str(used_seed))]
+                extra = gen_details + [
+                    ("Model", variant_name),
+                    ("Device", device_str),
+                    ("Triton kernels", "on" if triton_kernels_active() else "off"),
+                    ("Seed", str(used_seed)),
+                ]
                 stats = _format_stats_html(timings=timings, mem_stats=mem_stats, extra_info=extra)
 
                 if num_variants > 1:
@@ -503,6 +600,7 @@ def on_generate_music_only(song_title, description, lyrics, tags,
         else:
             yield gr.skip(), _status_html(f"Error: {e}", "error"), *_btns_enabled()
     finally:
+        executor.shutdown(wait=False)
         if style_embedding is not None:
             from style_transfer import unload_muq
             unload_muq()
@@ -1063,10 +1161,13 @@ with gr.Blocks(title="HeartMuse Music Generator", css=CUSTOM_CSS) as app:
         )
 
         # Generate Music button
+        # show_progress="hidden": status_box shows progress already, and Gradio's
+        # pulsing overlay on the outputs runs on the browser's main thread
         gen_music_btn.click(
             on_generate_music_only,
             [song_title_box, song_desc, lyrics_box, tags_box] + music_inputs,
             [audio_out, status_box] + all_btns,
+            show_progress="hidden",
         )
 
         unload_ollama_btn.click(on_unload_ollama, [llm_backend, ollama_url, ollama_model], [ollama_status])

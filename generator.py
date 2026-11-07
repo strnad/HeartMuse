@@ -3,6 +3,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import weakref
 import torch
 import fast_decode
@@ -152,8 +153,19 @@ def ensure_models_downloaded(model_variant=None):
 def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
                    max_audio_length_ms=240_000, output_path=None,
                    lazy_load=None, model_variant=None, style_embedding=None,
-                   seed=None):
-    """Generate music and return path to output file."""
+                   seed=None, progress=None):
+    """Generate music and return path to output file.
+
+    progress: optional dict, updated in place for another thread to read:
+    phase ("loading", "generating", "decoding", "done"), frames (frame steps
+    run so far), max_frames, audio_frames (frames passed to the audio codec)
+    and time.monotonic() timestamps t_start, t_frames, t_decode, t_end, set
+    as each phase starts (before "phase" changes, so readers can rely on them).
+    """
+    if progress is None:
+        progress = {}
+    progress.update(t_start=time.monotonic(), frames=0, max_frames=max_audio_length_ms // 80,
+                    phase="loading")
     if lazy_load is None:
         lazy_load = DEFAULT_LAZY_LOAD
     if model_variant is None:
@@ -192,6 +204,16 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
 
             pipe.preprocess = _patched_preprocess.__get__(pipe, type(pipe))
 
+        # Report when the frame loop ends and audio decoding starts
+        _orig_postprocess = pipe.postprocess.__func__
+
+        def _postprocess_with_progress(self, model_outputs, **kwargs):
+            progress.update(t_decode=time.monotonic(), audio_frames=model_outputs["frames"].shape[-1],
+                            phase="decoding")
+            return _orig_postprocess(self, model_outputs, **kwargs)
+
+        pipe.postprocess = _postprocess_with_progress.__get__(pipe, type(pipe))
+
         mula_model = pipe.mula
 
         # Install cancellation hook using weak references so that heartlib's
@@ -207,7 +229,11 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
             model = _mula_ref()
             if model is None:
                 raise GenerationCancelled()
-            return graph_step(model, **kwargs)
+            if progress["phase"] == "loading":
+                progress.update(t_frames=time.monotonic(), phase="generating")
+            frame = graph_step(model, **kwargs)
+            progress["frames"] += 1
+            return frame
 
         mula_model.generate_frame = cancellable_generate_frame
         del mula_model  # release strong reference; only pipe._mula remains
@@ -228,6 +254,7 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
                     temperature=temperature,
                     cfg_scale=cfg_scale,
                 )
+            progress.update(t_end=time.monotonic(), phase="done")
             return output_path, seed
         except Exception:
             _force_gpu_cleanup()
@@ -245,6 +272,8 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
                 del pipe._style_embedding
             if 'preprocess' in pipe.__dict__:
                 del pipe.preprocess  # restore original class method
+            if 'postprocess' in pipe.__dict__:
+                del pipe.postprocess
 
         _cancel_event.clear()
         for f in (lyrics_file.name, tags_file.name):

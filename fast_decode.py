@@ -260,6 +260,11 @@ def enable(triton_kernels):
     _use_compiled = triton_kernels
 
 
+def triton_kernels_active():
+    """Whether the compiled Triton kernels are in use (False after a fallback)."""
+    return _use_compiled
+
+
 def _recover_from_failed_capture(pool, stream, rng_state):
     """Undo what a failed capture leaves behind.
 
