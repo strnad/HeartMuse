@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 
 from dotenv import load_dotenv
@@ -82,6 +83,12 @@ DEFAULT_GENERATION_PARAMS = {
 DEFAULT_NUM_VARIANTS = _env_int("MUSIC_NUM_VARIANTS", "1")
 
 DEFAULT_LAZY_LOAD = os.environ.get("LAZY_LOAD", "true").lower() in ("1", "true", "yes")
+
+# Fused Triton kernels (torch.compile) for music generation. Off by default on
+# Windows, where Triton usually isn't available.
+TRITON_KERNELS_ENABLED = os.environ.get(
+    "TRITON_KERNELS", "false" if sys.platform == "win32" else "true"
+).lower() in ("1", "true", "yes")
 
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "glm-4.7-flash")

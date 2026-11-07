@@ -323,6 +323,9 @@ MODEL_VARIANT=rl
 # Lazy loading - loads models on demand, frees VRAM between stages
 LAZY_LOAD=true
 
+# Fused Triton kernels via torch.compile (default: true, false on Windows)
+TRITON_KERNELS=true
+
 # Features (true/false)
 STYLE_TRANSFER=true
 TRANSCRIPTION=true

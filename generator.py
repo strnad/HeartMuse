@@ -5,9 +5,10 @@ import tempfile
 import threading
 import weakref
 import torch
+import fast_decode
 from config import (
     CKPT_DIR, OUTPUT_DIR, DEFAULT_LAZY_LOAD, DEFAULT_MODEL_VARIANT,
-    MODEL_VARIANTS,
+    MODEL_VARIANTS, TRITON_KERNELS_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,173 +38,6 @@ def cancel_generation():
 def is_generation_cancelled():
     """Check if cancellation has been requested."""
     return _cancel_event.is_set()
-
-
-def _patch_torchtune_attention():
-    """Make torchtune's KV-cached attention cheaper for frame-by-frame decoding.
-
-    - KVCache: no GPU->CPU syncs. update() asserts on a CUDA tensor and
-      reset() calls .item(), in every attention layer (~60x per audio frame);
-      syncs also aren't allowed inside a CUDA graph.
-    - Caches hold num_kv_heads (GQA) instead of keys/values repeated for every
-      query head: 3x less VRAM and memory traffic. For single-token queries
-      each group of query heads is folded into the query-length dim, so the
-      keys/values are never repeated.
-    - KVCache.attend_len: attention reads only the first attend_len slots
-      instead of the whole 8192-slot backbone cache, most of which is still
-      empty (set per frame by _GraphedFrameStep).
-    """
-    from torchtune.modules.attention import MultiHeadAttention
-    from torchtune.modules.kv_cache import KVCache
-    if getattr(KVCache, "_heartmuse_patched", False):
-        return
-
-    def update(self, k_val, v_val):
-        bsz, _, seq_len, _ = k_val.shape
-        if bsz > self.k_cache.shape[0]:
-            raise ValueError(
-                f"The current cache has been setup with a batch size of {self.k_cache.shape[0]}"
-                f", but found new key tensors with batch size {k_val.shape[0]}!"
-            )
-        k_out = self.k_cache
-        v_out = self.v_cache
-        k_out[:bsz, :, self.cache_pos[:seq_len]] = k_val
-        v_out[:bsz, :, self.cache_pos[:seq_len]] = v_val
-        self.cache_pos += seq_len
-        return k_out, v_out
-
-    def reset(self):
-        self.k_cache.zero_()
-        self.v_cache.zero_()
-        self.cache_pos.sub_(self.cache_pos[0].clone())
-
-    def setup_cache(self, batch_size, dtype, max_seq_len):
-        if self.kv_cache is None:
-            self.kv_cache = KVCache(
-                batch_size=batch_size,
-                max_seq_len=max_seq_len,
-                num_heads=self.num_kv_heads,
-                head_dim=self.head_dim,
-                dtype=dtype,
-            )
-            self.cache_enabled = True
-
-    orig_forward = MultiHeadAttention.forward
-
-    def forward(self, x, y=None, *, mask=None, input_pos=None):
-        cache = self.kv_cache
-        if (y is None or mask is None or cache is None or not self.cache_enabled
-                or self.training or self.q_norm is not None or self.k_norm is not None
-                or cache.k_cache.shape[1] != self.num_kv_heads):
-            return orig_forward(self, x, y, mask=mask, input_pos=input_pos)
-
-        b, s, _ = x.shape
-        q_per_kv = self.num_heads // self.num_kv_heads
-        q = self.q_proj(x).view(b, s, self.num_heads, self.head_dim)
-        k = self.k_proj(y).view(b, s, self.num_kv_heads, self.head_dim)
-        v = self.v_proj(y).view(b, s, self.num_kv_heads, self.head_dim)
-        if self.pos_embeddings is not None:
-            q = self.pos_embeddings(q, input_pos=input_pos)
-            k = self.pos_embeddings(k, input_pos=input_pos)
-        k, v = cache.update(k.transpose(1, 2), v.transpose(1, 2))
-        n = cache.attend_len
-        k, v, mask = k[:b, :, :n], v[:b, :, :n], mask[:, None, :, :n]
-
-        if s == 1:
-            # Query head h attends to kv head h // q_per_kv, so [b, 1, H, d]
-            # viewed as [b, kv_heads, q_per_kv, d] lines each group up with
-            # its kv head as q_per_kv query rows.
-            q = q.view(b, self.num_kv_heads, q_per_kv, self.head_dim)
-            out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
-        else:
-            q = q.transpose(1, 2)
-            k = k.repeat_interleave(q_per_kv, dim=1)
-            v = v.repeat_interleave(q_per_kv, dim=1)
-            out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
-            out = out.transpose(1, 2)
-        return self.output_proj(out.reshape(b, s, -1))
-
-    KVCache.update = update
-    KVCache.reset = reset
-    KVCache.attend_len = None
-    MultiHeadAttention.setup_cache = setup_cache
-    MultiHeadAttention.forward = forward
-    KVCache._heartmuse_patched = True
-
-
-class _GraphedFrameStep:
-    """Replay single-frame generate_frame() calls from captured CUDA graphs.
-
-    One audio frame launches ~3000 small kernels (backbone + 7 decoder passes
-    at batch 2, seq len 1). The GPU runs them faster than one Python thread can
-    issue them, so it sits half idle. A graph replay issues the whole frame at
-    once.
-
-    Backbone attention only reads the filled part of the KV cache, rounded up
-    to BUCKET slots; since a graph has fixed shapes, there is one graph per
-    bucket. The prompt frame (variable length) always runs eagerly, and so does
-    the first frame of each bucket, as warmup before capture.
-
-    The graphs read buffers that setup_caches() reallocates, so they are only
-    valid for one generation: create a new instance per pipeline call.
-    """
-    BUCKET = 512
-
-    def __init__(self, generate_frame):
-        self._generate_frame = generate_frame
-        self._graphs = {}  # attend_len -> (graph, static inputs, output)
-        self._warm = set()
-        self._disabled = False
-
-    def __call__(self, model, **kwargs):
-        tokens = kwargs["tokens"]
-        if not tokens.is_cuda:
-            return self._generate_frame(model, **kwargs)
-
-        caches = [layer.attn.kv_cache for layer in model.backbone.layers]
-        last_pos = int(kwargs["input_pos"].max())  # tiny sync, the pipeline syncs per frame anyway
-        attend_len = min(-(-(last_pos + 1) // self.BUCKET) * self.BUCKET,
-                         caches[0].k_cache.shape[2])
-        for cache in caches:
-            cache.attend_len = attend_len
-
-        if (self._disabled or tokens.shape[1] != 1
-                or kwargs.get("continuous_segments") is not None):
-            return self._generate_frame(model, **kwargs)
-        entry = self._graphs.get(attend_len)
-        if entry is None:
-            if attend_len not in self._warm:
-                self._warm.add(attend_len)
-                return self._generate_frame(model, **kwargs)
-            try:
-                entry = self._graphs[attend_len] = self._capture(model, kwargs)
-            except Exception:
-                logger.warning("CUDA graph capture failed, continuing without it", exc_info=True)
-                self.release()
-                self._disabled = True
-                return self._generate_frame(model, **kwargs)
-        graph, static, out = entry
-        for name, buf in static.items():
-            buf.copy_(kwargs[name])
-        graph.replay()
-        return out.clone()
-
-    def _capture(self, model, kwargs):
-        static = {name: kwargs[name].clone()
-                  for name in ("tokens", "tokens_mask", "input_pos")}
-        params = {k: v for k, v in kwargs.items() if k not in static}
-        graph = torch.cuda.CUDAGraph()
-        # Mirror the caller's autocast, but without the cast cache, which must
-        # not be used during capture.
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"), \
-                torch.autocast("cuda", dtype=torch.get_autocast_dtype("cuda"),
-                               enabled=torch.is_autocast_enabled("cuda"),
-                               cache_enabled=False):
-            out = self._generate_frame(model, **static, **params)
-        return graph, static, out
-
-    def release(self):
-        self._graphs.clear()
 
 
 def get_pipeline(lazy_load=False, model_variant=None):
@@ -359,8 +193,8 @@ def generate_music(lyrics, tags, temperature=1.0, cfg_scale=1.5, topk=50,
         # _unload() can actually free the model from VRAM between stages.
         # Strong references (bound methods, local vars) would prevent GC.
         _mula_ref = weakref.ref(mula_model)
-        _patch_torchtune_attention()  # graph capture requires sync-free KV caches
-        graph_step = _GraphedFrameStep(type(mula_model).generate_frame)
+        fast_decode.enable(triton_kernels=TRITON_KERNELS_ENABLED)
+        graph_step = fast_decode.GraphedFrameStep(type(mula_model).generate_frame)
 
         def cancellable_generate_frame(**kwargs):
             if _cancel_event.is_set():
