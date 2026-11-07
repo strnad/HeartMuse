@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import warnings
 import html as html_mod
 import gradio as gr
 from config import (
@@ -18,6 +19,10 @@ from generator import generate_music, unload_pipeline, cancel_generation, Genera
 from history import generate_output_path, save_generation, load_history, delete_generation, filter_history
 
 logger = logging.getLogger(__name__)
+
+# Gradio 6 still uses Starlette's deprecated HTTP_422_UNPROCESSABLE_ENTITY
+# name, which warns on every queued request (the memory monitor polls every 3 s)
+warnings.filterwarnings("ignore", message="'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated")
 
 HISTORY_PAGE_SIZE = 10
 _SORT_MAP = {"Newest": "newest", "Oldest": "oldest", "Title A-Z": "title_az", "Title Z-A": "title_za"}
