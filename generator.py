@@ -72,6 +72,11 @@ def get_pipeline(lazy_load=False, model_variant=None):
         ensure_gen_config()
         from heartlib import HeartMuLaGenPipeline
 
+        # Newer heartlib wraps backbone/decoder in torch.compile. fast_decode
+        # already speeds them up, and the compiled backbone recompiles for
+        # every KV cache bucket, stalling generation for seconds each time.
+        HeartMuLaGenPipeline._apply_compile = lambda self, model: None
+
         device_mula = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         device_codec = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
